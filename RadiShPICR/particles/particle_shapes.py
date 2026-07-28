@@ -6,6 +6,12 @@ import jax.numpy as jnp
 # from RadiShPICR.ConstraintBasedRelativity.utils import nearest_interior_index
 
 
+def _linear_shape_weight(delta):
+    """Evaluate the one-dimensional linear CIC shape function."""
+
+    return jnp.maximum(1.0 - jnp.abs(delta), 0.0)
+
+
 def _quadratic_shape_weight(delta):
     """Evaluate the one-dimensional quadratic TSC shape function."""
 
@@ -42,15 +48,27 @@ def radial_shape_stencil(radial_positions, grid, shape_mode="nearest"):
         return indices, weights
 
     floating_index = (radial_positions - grid.r_full[0]) / grid.dr
-    anchor = jnp.rint(floating_index).astype(jnp.int32)
-    delta = floating_index - anchor.astype(radial_positions.dtype)
+    if shape_mode == "linear":
+        anchor = jnp.floor(floating_index).astype(jnp.int32)
+        delta = floating_index - anchor.astype(radial_positions.dtype)
+        offsets = jnp.asarray([0, 1], dtype=anchor.dtype)
 
-    offsets = jnp.asarray([-1, 0, 1], dtype=anchor.dtype)
-    stencil_delta = (
-        delta[jnp.newaxis, :]
-        - offsets[:, jnp.newaxis].astype(radial_positions.dtype)
-    )
-    raw_weights = _quadratic_shape_weight(stencil_delta)
+        stencil_delta = (
+            delta[jnp.newaxis, :]
+            - offsets[:, jnp.newaxis].astype(radial_positions.dtype)
+        )
+        raw_weights = _linear_shape_weight(stencil_delta)
+    else:
+        anchor = jnp.rint(floating_index).astype(jnp.int32)
+        delta = floating_index - anchor.astype(radial_positions.dtype)
+        offsets = jnp.asarray([-1, 0, 1], dtype=anchor.dtype)
+
+        stencil_delta = (
+            delta[jnp.newaxis, :]
+            - offsets[:, jnp.newaxis].astype(radial_positions.dtype)
+        )
+        raw_weights = _quadratic_shape_weight(stencil_delta)
+
     raw_indices = anchor[jnp.newaxis, :] + offsets[:, jnp.newaxis]
 
     first_interior = jnp.asarray(1, dtype=raw_indices.dtype)
@@ -129,4 +147,7 @@ def shape_weights_at_point(
         return jnp.where(jnp.abs(radial_positions - radial_coordinate) < 0.5 * dr, 1.0, 0.0)
 
     delta = (radial_positions - radial_coordinate) / dr
+    if shape_mode == "linear":
+        return _linear_shape_weight(delta)
+
     return _quadratic_shape_weight(delta)

@@ -4,8 +4,8 @@ RadiShPICR is a spherically symmetric particle in cell code that fuses a purely 
 particle-in-cell method with a spherically symmetric formulation of numerical relativity.
 
 This code uses the Kerr-Schild coordinate system for better numerical stability. Particles are evolved using 
-a 4th order Runge-Kutta scheme and particle deposition and interpolation is performed using second order shape 
-factors.
+a 4th order Runge-Kutta scheme. Particle deposition and interpolation support nearest-grid-point, linear
+cloud-in-cell, and quadratic triangular-shaped-cloud shape factors.
 
 The relativity implementations are localized by formulation.  Constraint-based
 radial metric solves and particle timestepping are imported from
