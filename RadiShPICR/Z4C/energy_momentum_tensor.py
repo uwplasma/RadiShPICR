@@ -4,10 +4,11 @@ import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
-from RadiShPICR.Z4C.derivatives import first_derivative
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
-from RadiShPICR.particles.particle_shapes import interpolate_field_to_particles
-from RadiShPICR.particles.particle_shapes import shape_weights_at_point
+from RadiShPICR.particles.particle_shapes import (
+    interpolate_fields_to_particles,
+    unbounded_radial_shape_stencil,
+)
 
 class MatterTerms(NamedTuple):
     rho: jnp.ndarray
@@ -41,12 +42,94 @@ def initialize_vacuum_matter_terms(metric):
     )
 
 
-def compute_radial_matter_terms(particles, metric: Z4C_Metric):
-    # assuming only radial dependence
+def _radial_matter_deposition_data(particles, metric):
+    r_particle, _ = particles.get_positions()
+    ur, uphi = particles.get_velocities()
+    particle_shape = particles.get_shape()
 
-    rho = relativistic_mass_energy_density(particles, metric)
-    Srr = compute_radial_stress_tensor_component(particles, metric)
-    Sr = compute_radial_momentum_density(particles, metric)
+    chi = metric.chi
+    grid = _radial_grid_from_metric(metric)
+    scaling_factor = jnp.sqrt(1.0 / chi**3)
+    scaling_factor_p, grr_p, gt_p = interpolate_fields_to_particles(
+        jnp.stack(
+            (
+                scaling_factor,
+                metric.conformal_grr / chi,
+                metric.conformal_gt / chi,
+            )
+        ),
+        r_particle,
+        grid,
+        shape_mode=particle_shape,
+    )
+
+    particle_volume_element = (
+        4.0 * jnp.pi * r_particle**2 * scaling_factor_p
+    )
+    lorentz_factor = jnp.sqrt(
+        1.0
+        + ur**2 / grr_p
+        + uphi**2 / (r_particle**2 * gt_p)
+    )
+    particle_mass = particles.get_mass()
+
+    indices, weights = unbounded_radial_shape_stencil(
+        r_particle,
+        metric.r,
+        metric.dr,
+        shape_mode=particle_shape,
+    )
+    rho_contribution = particle_mass * lorentz_factor / particle_volume_element
+    Srr_contribution = (
+        particle_mass * ur**2 / (particle_volume_element * lorentz_factor)
+    )
+    Sr_contribution = particle_mass * ur / particle_volume_element
+
+    return (
+        indices,
+        weights,
+        rho_contribution,
+        Srr_contribution,
+        Sr_contribution,
+    )
+
+
+def _deposit_radial_particle_quantity(indices, weights, contribution, r):
+    return jnp.zeros_like(r).at[indices].add(
+        weights * contribution[jnp.newaxis, :]
+    )
+
+
+def compute_radial_matter_terms(particles, metric: Z4C_Metric):
+    """Deposit all nonzero radial matter terms with one compact stencil."""
+
+    (
+        indices,
+        weights,
+        rho_contribution,
+        Srr_contribution,
+        Sr_contribution,
+    ) = _radial_matter_deposition_data(particles, metric)
+
+    zeros = jnp.zeros_like(metric.r)
+    rho = _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        rho_contribution,
+        metric.r,
+    )
+    Srr = _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        Srr_contribution,
+        metric.r,
+    )
+    Sr = _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        Sr_contribution,
+        metric.r,
+    )
 
     return MatterTerms(
         rho=rho,
@@ -58,103 +141,38 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
 
 
 def relativistic_mass_energy_density(particles, metric: Z4C_Metric):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
-    particle_shape = particles.get_shape()
-    # unpack particle positions, velocities, and shape
-    chi = metric.chi
-    conformal_grr = metric.conformal_grr
-    conformal_gt = metric.conformal_gt
-    r = metric.r
-    dr = metric.dr
-    # unpack metric components
-    grid = _radial_grid_from_metric(metric)
-
-
-    scaling_factor = jnp.sqrt( 1 / chi**3 )
-    # compute the scaling factor for the energy density based on the metric components
-    scaling_factor_p = interpolate_field_to_particles(scaling_factor, r_particle, grid, shape_mode=particle_shape)
-    # interpolate the scaling factor to particle positions
-    grr_p = interpolate_field_to_particles(conformal_grr / chi, r_particle, grid, shape_mode=particle_shape)
-    gt_p = interpolate_field_to_particles(conformal_gt / chi, r_particle, grid, shape_mode=particle_shape)
-    # interpolate the conformal metric components to particle positions
-
-    particle_volume_element = 4 * jnp.pi * r_particle**2 * scaling_factor_p
-    # compute the volume element for each particle based on the interpolated scaling factor
-
-    lorentz_factor = jnp.sqrt( 1 + ur**2 / grr_p  + uphi**2 / (r_particle**2 * gt_p)  )
-    # compute the Lorentz factor for each particle based on its velocities and the interpolated metric components
-
-    weights = shape_weights_at_point(r_particle[jnp.newaxis, :], r[:, jnp.newaxis], dr, particle_shape)
-    # compute the shape weights for each particle based on its position and the grid points
-
-    energy_density = jnp.sum(particles.get_mass() * weights * lorentz_factor / particle_volume_element, axis=1)
-    # compute the total energy density by summing over all particles, weighted by their mass,
-    # shape weights, Lorentz factor, and volume element
-
-    return energy_density
+    indices, weights, rho_contribution, _, _ = (
+        _radial_matter_deposition_data(particles, metric)
+    )
+    return _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        rho_contribution,
+        metric.r,
+    )
 
 
 def compute_radial_momentum_density(particles, metric: Z4C_Metric):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
-    particle_shape = particles.get_shape()
-    # unpack particle positions, velocities, and shape
-    chi = metric.chi
-    conformal_grr = metric.conformal_grr
-    conformal_gt = metric.conformal_gt
-    r = metric.r
-    dr = metric.dr
-    # unpack metric components
-    grid = _radial_grid_from_metric(metric)
-
-    weights = shape_weights_at_point(r_particle[jnp.newaxis, :], r[:, jnp.newaxis], dr, particle_shape)
-    # compute the shape weights for each particle based on its position and the grid points
-
-    scaling_factor = jnp.sqrt( 1 / chi**3 )
-    # compute the scaling factor for the energy density based on the metric components
-    scaling_factor_p = interpolate_field_to_particles(scaling_factor, r_particle, grid, shape_mode=particle_shape)
-    # interpolate the scaling factor to particle positions
-
-    particle_volume_element = 4 * jnp.pi * r_particle**2 * scaling_factor_p
-    # compute the volume element for each particle based on the interpolated scaling factor
-
-    return jnp.sum(particles.get_mass() * weights * ur / particle_volume_element, axis=1)
-    # compute the total radial momentum density by summing over all particles, weighted by their mass,
+    indices, weights, _, _, Sr_contribution = (
+        _radial_matter_deposition_data(particles, metric)
+    )
+    return _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        Sr_contribution,
+        metric.r,
+    )
 
 def compute_radial_stress_tensor_component(particles, metric: Z4C_Metric):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
-    particle_shape = particles.get_shape()
-    # unpack particle positions, velocities, and shape
-    chi = metric.chi
-    conformal_grr = metric.conformal_grr
-    conformal_gt = metric.conformal_gt
-    r = metric.r
-    dr = metric.dr
-    # unpack metric components
-    grid = _radial_grid_from_metric(metric)
-
-    weights = shape_weights_at_point(r_particle[jnp.newaxis, :], r[:, jnp.newaxis], dr, particle_shape)
-    # compute the shape weights for each particle based on its position and the grid points
-
-    scaling_factor = jnp.sqrt( 1 / chi**3 )
-    # compute the scaling factor for the energy density based on the metric components
-    scaling_factor_p = interpolate_field_to_particles(scaling_factor, r_particle, grid, shape_mode=particle_shape)
-    # interpolate the scaling factor to particle positions
-
-    grr_p = interpolate_field_to_particles(conformal_grr / chi, r_particle, grid, shape_mode=particle_shape)
-    gt_p = interpolate_field_to_particles(conformal_gt / chi, r_particle, grid, shape_mode=particle_shape)
-    # interpolate the conformal metric components to particle positions
-
-    particle_volume_element = 4 * jnp.pi * r_particle**2 * scaling_factor_p
-    # compute the volume element for each particle based on the interpolated scaling factor
-
-    lorentz_factor = jnp.sqrt( 1 + ur**2 / grr_p  + uphi**2 / (r_particle**2 * gt_p)  )
-    # compute the Lorentz factor for each particle based on its velocities and the interpolated metric components
-
-    return jnp.sum(particles.get_mass() * weights * ur**2 / (particle_volume_element * lorentz_factor), axis=1)
-    # compute the total radial stress tensor component by summing over all particles, weighted by their mass,
+    indices, weights, _, Srr_contribution, _ = (
+        _radial_matter_deposition_data(particles, metric)
+    )
+    return _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        Srr_contribution,
+        metric.r,
+    )
 
 
 

@@ -144,6 +144,29 @@ def test_rk4_step_preserves_flat_vacuum_metric():
         assert jnp.allclose(updated_field, metric_field)
 
 
+def test_compiled_vacuum_scan_matches_repeated_rk4_steps():
+    import jax
+
+    from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps, rk4_step
+
+    r = jnp.linspace(0.1, 1.0, 16)
+    metric = _flat_metric(r)
+    matter_terms = initialize_vacuum_matter_terms(metric)
+    dt = 1.0e-3
+    expected = metric
+    for _ in range(3):
+        expected = rk4_step(expected, matter_terms, dt)
+
+    actual, first_nonfinite_step = jax.jit(
+        advance_vacuum_steps,
+        static_argnames=("num_steps",),
+    )(metric, dt, num_steps=3)
+
+    for actual_field, expected_field in zip(actual, expected):
+        assert jnp.allclose(actual_field, expected_field)
+    assert first_nonfinite_step == -1
+
+
 def test_rk4_step_projects_every_metric_stage(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 

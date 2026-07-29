@@ -55,9 +55,10 @@ def _copy_particle_state(particles, r, phi, ur):
     return _freeze_center_particles(stage_particles)
 
 
-def _particle_derivatives(particles, r_grid, dr):
+def _particle_derivatives(particles, r_grid, dr, U_state=None):
     particles = _freeze_center_particles(particles)
-    U_state = calculate_metric(particles, r_grid, dr)
+    if U_state is None:
+        U_state = calculate_metric(particles, r_grid, dr)
     dr_dt, dur_dt_GR = compute_geodesic_terms(particles, U_state)
     dur_dt_EM = compute_lorentz_terms(particles, U_state)
 
@@ -75,13 +76,18 @@ def _particle_derivatives(particles, r_grid, dr):
     return dr_dt, dphi_dt, dur_dt
 
 
-def step_rk4(particles, r_grid, dr, dt):
+def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
     particles = _freeze_center_particles(particles)
 
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()
 
-    k1_r, k1_phi, k1_ur = _particle_derivatives(particles, r_grid, dr)
+    k1_r, k1_phi, k1_ur = _particle_derivatives(
+        particles,
+        r_grid,
+        dr,
+        U_state=initial_U_state,
+    )
 
     stage2 = _copy_particle_state(
         particles,
@@ -117,3 +123,22 @@ def step_rk4(particles, r_grid, dr, dt):
     particles = _freeze_center_particles(particles)
 
     return particles
+
+
+def step_rk4(particles, r_grid, dr, dt):
+    return _step_rk4_particle_update(particles, r_grid, dr, dt)
+
+
+def step_rk4_with_metric(particles, U_state, r_grid, dr, dt):
+    """Advance particles and return the metric of the completed RK4 state."""
+
+    particles = _step_rk4_particle_update(
+        particles,
+        r_grid,
+        dr,
+        dt,
+        initial_U_state=U_state,
+    )
+    U_state_next = calculate_metric(particles, r_grid, dr)
+
+    return particles, U_state_next

@@ -8,8 +8,17 @@ from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
     interpolate_field_to_particles,
+    interpolate_fields_to_particles,
     radial_shape_stencil,
     shape_weights_at_point,
+    unbounded_radial_shape_stencil,
+)
+from RadiShPICR.ConstraintBasedRelativity.solve_metric import (
+    _source_terms_at_point,
+)
+from RadiShPICR.ConstraintBasedRelativity.energy_momentum_tensor import (
+    Srr_at_point,
+    Sr_at_point,
 )
 
 
@@ -62,6 +71,39 @@ def test_linear_shape_exactly_interpolates_an_affine_field():
     )
 
     assert jnp.allclose(interpolated_field, 2.0 + 3.0 * radial_positions)
+
+
+def test_batched_field_interpolation_matches_individual_fields():
+    grid = make_grid()
+    radial_positions = jnp.asarray([0.25, 1.25, 3.5, 7.75])
+    fields = jnp.stack(
+        (
+            2.0 + 3.0 * grid.r_full,
+            1.0 + grid.r_full**2,
+            jnp.sin(grid.r_full),
+        )
+    )
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        expected = jnp.stack(
+            tuple(
+                interpolate_field_to_particles(
+                    field,
+                    radial_positions,
+                    grid,
+                    shape_mode=shape_mode,
+                )
+                for field in fields
+            )
+        )
+        actual = interpolate_fields_to_particles(
+            fields,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+        )
+
+        assert jnp.allclose(actual, expected)
 
 
 def test_quadratic_shape_has_expected_tsc_weights():
@@ -127,6 +169,93 @@ def test_grid_aware_pointwise_weights_match_indexed_stencil():
         assert jnp.allclose(pointwise_weights, indexed_weights)
         assert jnp.allclose(pointwise_weights[boundary_indices], 0.0)
         assert jnp.allclose(jnp.sum(pointwise_weights, axis=0), 1.0)
+
+
+def test_unbounded_compact_stencil_matches_pointwise_shape_weights():
+    radial_grid = jnp.arange(0.5, 6.0, 1.0)
+    radial_positions = jnp.asarray([-0.25, 0.5, 1.0, 2.25, 5.5, 6.25])
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        indices, stencil_weights = unbounded_radial_shape_stencil(
+            radial_positions,
+            radial_grid,
+            dr=1.0,
+            shape_mode=shape_mode,
+        )
+        particle_columns = jnp.broadcast_to(
+            jnp.arange(radial_positions.shape[0])[jnp.newaxis, :],
+            indices.shape,
+        )
+        compact_weights = jnp.zeros(
+            (radial_grid.shape[0], radial_positions.shape[0])
+        )
+        compact_weights = compact_weights.at[indices, particle_columns].add(
+            stencil_weights
+        )
+        pointwise_weights = shape_weights_at_point(
+            radial_positions[jnp.newaxis, :],
+            radial_grid[:, jnp.newaxis],
+            1.0,
+            shape_mode=shape_mode,
+        )
+
+        assert jnp.allclose(compact_weights, pointwise_weights)
+
+
+def test_fused_constraint_sources_match_individual_source_functions():
+    grid = make_grid()
+    radial_coordinates = grid.r_full
+    A = 1.0 + 0.03 * radial_coordinates
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        particles = particle_species(
+            name="moving",
+            charge=3.0,
+            mass=2.0,
+            weight=jnp.asarray([0.2, 0.3, 0.5]),
+            r=jnp.asarray([0.25, 3.25, 7.75]),
+            ur=jnp.asarray([0.4, -0.2, 0.7]),
+            phi=jnp.zeros(3),
+            uphi=jnp.asarray([0.1, 0.3, -0.2]),
+            shape_mode=shape_mode,
+        )
+
+        for A_at_point, radial_coordinate in zip(A, radial_coordinates):
+            fused = _source_terms_at_point(
+                particles,
+                A_at_point,
+                radial_coordinate,
+                grid,
+            )
+            expected = (
+                mass_density_at_point(
+                    particles,
+                    A_at_point,
+                    radial_coordinate,
+                    grid,
+                ),
+                charge_density_at_point(
+                    particles,
+                    A_at_point,
+                    radial_coordinate,
+                    grid,
+                ),
+                Srr_at_point(
+                    particles,
+                    A_at_point,
+                    radial_coordinate,
+                    grid,
+                ),
+                Sr_at_point(
+                    particles,
+                    A_at_point,
+                    radial_coordinate,
+                    grid,
+                ),
+            )
+
+            for fused_source, expected_source in zip(fused, expected):
+                assert jnp.allclose(fused_source, expected_source)
 
 
 def test_boundary_source_deposition_conserves_particle_mass_and_charge():

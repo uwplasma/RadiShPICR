@@ -334,7 +334,7 @@ def dAtdt(metric: Z4C_Metric, matter_terms):
     dAtdt += -(gt * alpha * d2chidr2) / (6 * grr)
     # compute the time derivative of At using the Z4C evolution equations
 
-    dAtdt += nu / 64 * (sixth_derivative(At, metric.dr, parity=1)) * (metric.dr ** 5)   
+    dAtdt += nu / 64 * (sixth_derivative(At, metric.dr, parity=1)) * (metric.dr ** 5)
 
 
     # SOMMERFELD BOUNDARY CONDITION FOR THETA AT OUTER BOUNDARY

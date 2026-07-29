@@ -93,8 +93,6 @@ def dthetadt(metric: Z4C_Metric, matter_terms):
 
 
     # SOMMERFELD BOUNDARY CONDITION FOR THETA AT OUTER BOUNDARY
-    dthetadr = first_derivative(theta, metric.dr, parity=1)
-
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 

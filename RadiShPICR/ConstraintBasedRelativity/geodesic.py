@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 
-from RadiShPICR.particles.particle_shapes import interpolate_field_to_particles
+from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import dr_A, dr_alpha, dr_beta_over_r
 from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, safe_radius
@@ -24,27 +24,7 @@ def compute_geodesic_terms(particles, U_state):
     shape_mode = particles.get_shape()
     interpolation_grid = _field_interpolation_grid(r_grid)
 
-    A_at_particle = interpolate_field_to_particles(
-        A_values,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-    lapse_at_particle = interpolate_field_to_particles(
-        alpha_values,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-
     beta = beta_over_r_values * r_grid
-    shift_at_particle = interpolate_field_to_particles(
-        beta,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-
     grid_derivative_state = (
         A_values,
         phi_values,
@@ -59,20 +39,24 @@ def compute_geodesic_terms(particles, U_state):
     dalpha_dr = dr_alpha(grid_derivative_state, dr_grid)
     d_shift_dr = dr_beta_over_r(grid_derivative_state, dr_grid) * r_grid + beta_over_r_values
 
-    dA_dr_at_particle = interpolate_field_to_particles(
-        dA_dr,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-    d_lapse_dr_at_particle = interpolate_field_to_particles(
-        dalpha_dr,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-    d_shift_dr_at_particle = interpolate_field_to_particles(
-        d_shift_dr,
+    (
+        A_at_particle,
+        lapse_at_particle,
+        shift_at_particle,
+        dA_dr_at_particle,
+        d_lapse_dr_at_particle,
+        d_shift_dr_at_particle,
+    ) = interpolate_fields_to_particles(
+        jnp.stack(
+            (
+                A_values,
+                alpha_values,
+                beta,
+                dA_dr,
+                dalpha_dr,
+                d_shift_dr,
+            )
+        ),
         r,
         interpolation_grid,
         shape_mode=shape_mode,

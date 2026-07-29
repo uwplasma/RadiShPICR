@@ -33,9 +33,9 @@ class particle_species:
 
     def tree_flatten(self):
         dynamic_fields = (
-            jnp.asarray(self.charges),
-            jnp.asarray(self.masses),
-            jnp.asarray(self.weight),
+            self.charges,
+            self.masses,
+            self.weight,
             self.r,
             self.ur,
             self.phi,
@@ -50,14 +50,15 @@ class particle_species:
         name, shape_mode = static_fields
         charge, mass, weight, r, ur, phi, uphi = dynamic_fields
 
-        return cls(
-            name=name,
-            charge=charge,
-            mass=mass,
-            weight=weight,
-            r=r,
-            ur=ur,
-            phi=phi,
-            uphi=uphi,
-            shape_mode=shape_mode,
-        )
+        particles = cls.__new__(cls)
+        particles.name = name
+        particles.charges = charge
+        particles.masses = mass
+        particles.weight = weight
+        particles.r = r
+        particles.ur = ur
+        particles.phi = phi
+        particles.uphi = uphi
+        particles.shape_mode = shape_mode
+
+        return particles

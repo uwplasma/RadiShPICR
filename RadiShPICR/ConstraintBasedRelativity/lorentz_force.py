@@ -1,4 +1,6 @@
-from RadiShPICR.particles.particle_shapes import interpolate_field_to_particles
+import jax.numpy as jnp
+
+from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 
 
@@ -18,14 +20,8 @@ def compute_lorentz_terms(particles, U_state):
     shape_mode = particles.get_shape()
     interpolation_grid = _field_interpolation_grid(r_grid)
 
-    lapse_at_particle = interpolate_field_to_particles(
-        alpha_values,
-        r,
-        interpolation_grid,
-        shape_mode=shape_mode,
-    )
-    electric_field_at_particle = interpolate_field_to_particles(
-        Er_values,
+    lapse_at_particle, electric_field_at_particle = interpolate_fields_to_particles(
+        jnp.stack((alpha_values, Er_values)),
         r,
         interpolation_grid,
         shape_mode=shape_mode,

@@ -29,8 +29,7 @@ package_root = next(
 if str(package_root) not in sys.path:
     sys.path.insert(0, str(package_root))
 
-from RadiShPICR.Z4C.energy_momentum_tensor import initialize_vacuum_matter_terms
-from RadiShPICR.Z4C.time_evolve import rk4_step
+from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps
 from RadiShPICR.Z4C.utils import generate_r_grid
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -78,36 +77,11 @@ metric = Z4C_Metric(
     dr=dr,
 )
 
-def metric_fields_finite(metric):
-    alpha = metric.alpha
-    beta = metric.beta
-    conformal_grr = metric.conformal_grr
-    conformal_gt = metric.conformal_gt
-    chi = metric.chi
-    Kh = metric.Kh
-    Arr = metric.Arr
-    At = metric.At
-    theta = metric.theta
-    Gamma = metric.Gamma
-
-    bools = jnp.stack([
-        jnp.isfinite(alpha),
-        jnp.isfinite(beta),
-        jnp.isfinite(conformal_grr),
-        jnp.isfinite(conformal_gt),
-        jnp.isfinite(chi),
-        jnp.isfinite(Kh),
-        jnp.isfinite(Arr),
-        jnp.isfinite(At),
-        jnp.isfinite(theta),
-        jnp.isfinite(Gamma),
-    ])
-    return jnp.all(bools)
-    # define a function to check if all metric fields are finite
-
-
-jitted_rk4_step = jax.jit(rk4_step)
-# jit the RK4 step function for performance
+jitted_advance_vacuum_steps = jax.jit(
+    advance_vacuum_steps,
+    static_argnames=("num_steps",),
+)
+# Compile several timesteps together and synchronize only at output boundaries.
 dt = CFL * float(dr)
 # compute the time step based on the CFL condition and the radial grid spacing
 Nt = int( FINAL_TIME / dt )
@@ -117,33 +91,71 @@ run_data = {
     "final_metric": None,
 }
 
-for t in tqdm(range(Nt)):
-    metric = jitted_rk4_step(metric, initialize_vacuum_matter_terms(metric), dt)
-    # perform a single RK4 time step to evolve the metric fields
-    jax.block_until_ready(metric.alpha)
-    # block until the metric fields are ready to ensure synchronization
-    if not metric_fields_finite(metric):
-        print(f"Non-finite fields encountered at step {t}, time {t*dt:.8e}")
-        break
+snapshot_interval = max(1, Nt // SNAPSHOT_COUNT)
+completed_steps = 0
 
-    if t % (Nt // SNAPSHOT_COUNT) == 0:
+with tqdm(total=Nt) as progress_bar:
+    while completed_steps < Nt:
+        snapshot_step = completed_steps
+        metric, first_nonfinite_step = jitted_advance_vacuum_steps(
+            metric,
+            dt,
+            num_steps=1,
+        )
+        host_metric = jax.device_get(metric)
+        first_nonfinite_step = jax.device_get(first_nonfinite_step)
+        completed_steps += 1
+        progress_bar.update(1)
+
+        if first_nonfinite_step >= 0:
+            print(
+                "Non-finite fields encountered at "
+                f"step {snapshot_step}, time {snapshot_step*dt:.8e}"
+            )
+            break
+
         snapshot = {
-            "time": float(t * dt),
+            "time": float(snapshot_step * dt),
             "fields": {
-                "alpha": jnp.asarray(metric.alpha),
-                "beta": jnp.asarray(metric.beta),
-                "conformal_grr": jnp.asarray(metric.conformal_grr),
-                "conformal_gt": jnp.asarray(metric.conformal_gt),
-                "chi": jnp.asarray(metric.chi),
-                "Kh": jnp.asarray(metric.Kh),
-                "Arr": jnp.asarray(metric.Arr),
-                "At": jnp.asarray(metric.At),
-                "theta": jnp.asarray(metric.theta),
-                "Gamma": jnp.asarray(metric.Gamma),
+                "alpha": host_metric.alpha,
+                "beta": host_metric.beta,
+                "conformal_grr": host_metric.conformal_grr,
+                "conformal_gt": host_metric.conformal_gt,
+                "chi": host_metric.chi,
+                "Kh": host_metric.Kh,
+                "Arr": host_metric.Arr,
+                "At": host_metric.At,
+                "theta": host_metric.theta,
+                "Gamma": host_metric.Gamma,
             },
         }
         run_data["snapshots"].append(snapshot)
-        # save a snapshot of the metric fields at regular intervals
+
+        remaining_chunk_steps = min(
+            snapshot_interval - 1,
+            Nt - completed_steps,
+        )
+        if remaining_chunk_steps == 0:
+            continue
+
+        metric, first_nonfinite_step = jitted_advance_vacuum_steps(
+            metric,
+            dt,
+            num_steps=remaining_chunk_steps,
+        )
+        first_nonfinite_step = jax.device_get(first_nonfinite_step)
+        completed_steps += remaining_chunk_steps
+        progress_bar.update(remaining_chunk_steps)
+
+        if first_nonfinite_step >= 0:
+            nonfinite_step = (
+                snapshot_step + 1 + int(first_nonfinite_step)
+            )
+            print(
+                "Non-finite fields encountered at "
+                f"step {nonfinite_step}, time {nonfinite_step*dt:.8e}"
+            )
+            break
 
 run_data["final_metric"] = metric
 # save the final metric after the evolution is complete

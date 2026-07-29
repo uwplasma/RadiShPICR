@@ -99,6 +99,53 @@ def radial_shape_stencil(radial_positions, grid, shape_mode="nearest"):
 
 
 @partial(jax.jit, static_argnames=("shape_mode",))
+def unbounded_radial_shape_stencil(
+    radial_positions,
+    radial_grid,
+    dr,
+    shape_mode="nearest",
+):
+    """Return compact weights without boundary clipping or renormalization."""
+
+    floating_index = (radial_positions - radial_grid[0]) / dr
+
+    if shape_mode == "nearest":
+        anchor = jnp.floor(floating_index + 0.5).astype(jnp.int32)
+        raw_indices = anchor[jnp.newaxis, :]
+        raw_weights = (
+            jnp.abs(floating_index - anchor.astype(radial_positions.dtype))
+            < 0.5
+        )[jnp.newaxis, :].astype(radial_positions.dtype)
+    elif shape_mode == "linear":
+        anchor = jnp.floor(floating_index).astype(jnp.int32)
+        offsets = jnp.asarray([0, 1], dtype=anchor.dtype)
+        raw_indices = anchor[jnp.newaxis, :] + offsets[:, jnp.newaxis]
+        delta = (
+            floating_index[jnp.newaxis, :]
+            - raw_indices.astype(radial_positions.dtype)
+        )
+        raw_weights = _linear_shape_weight(delta)
+    else:
+        anchor = jnp.rint(floating_index).astype(jnp.int32)
+        offsets = jnp.asarray([-1, 0, 1], dtype=anchor.dtype)
+        raw_indices = anchor[jnp.newaxis, :] + offsets[:, jnp.newaxis]
+        delta = (
+            floating_index[jnp.newaxis, :]
+            - raw_indices.astype(radial_positions.dtype)
+        )
+        raw_weights = _quadratic_shape_weight(delta)
+
+    valid = jnp.logical_and(
+        raw_indices >= 0,
+        raw_indices < radial_grid.shape[0],
+    )
+    indices = jnp.clip(raw_indices, 0, radial_grid.shape[0] - 1)
+    weights = jnp.where(valid, raw_weights, 0.0)
+
+    return indices, weights
+
+
+@partial(jax.jit, static_argnames=("shape_mode",))
 def interpolate_field_to_particles(field, radial_positions, grid, shape_mode="nearest"):
     """Interpolate a radial grid field to particle positions."""
 
@@ -111,6 +158,25 @@ def interpolate_field_to_particles(field, radial_positions, grid, shape_mode="ne
         shape_mode=shape_mode,
     )
     return jnp.sum(field[indices] * weights, axis=0)
+
+
+@partial(jax.jit, static_argnames=("shape_mode",))
+def interpolate_fields_to_particles(fields, radial_positions, grid, shape_mode="nearest"):
+    """Interpolate several radial fields using one particle stencil."""
+
+    fields = jnp.asarray(fields)
+
+    if shape_mode == "nearest":
+        return jax.vmap(
+            lambda field: jnp.interp(radial_positions, grid.r_full, field)
+        )(fields)
+
+    indices, weights = radial_shape_stencil(
+        radial_positions,
+        grid,
+        shape_mode=shape_mode,
+    )
+    return jnp.sum(fields[:, indices] * weights[jnp.newaxis, :, :], axis=1)
 
 
 def shape_weights_at_point(

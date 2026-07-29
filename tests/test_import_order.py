@@ -54,19 +54,31 @@ def test_radial_electric_solver_imports_without_relativity_metric_cycle():
         calculate_metric,
         step,
         step_rk4,
+        step_rk4_with_metric,
     )
 
     assert callable(step)
     assert callable(step_rk4)
+    assert callable(step_rk4_with_metric)
     assert callable(calculate_metric)
 
 
 def test_formulation_local_evolution_imports_are_available():
-    from RadiShPICR.ConstraintBasedRelativity.evolve import step, step_rk4
-    from RadiShPICR.Z4C import rk4_step, particles_rk4_step
+    from RadiShPICR.ConstraintBasedRelativity.evolve import (
+        step,
+        step_rk4,
+        step_rk4_with_metric,
+    )
+    from RadiShPICR.Z4C import (
+        advance_vacuum_steps,
+        particles_rk4_step,
+        rk4_step,
+    )
 
     assert callable(step)
     assert callable(step_rk4)
+    assert callable(step_rk4_with_metric)
+    assert callable(advance_vacuum_steps)
     assert callable(rk4_step)
     assert callable(particles_rk4_step)
 

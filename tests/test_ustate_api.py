@@ -4,7 +4,11 @@ import jax.numpy as jnp
 import RadiShPICR.ConstraintBasedRelativity.evolve as constraint_evolve
 from RadiShPICR.ConstraintBasedRelativity.charge_density import charge_density_at_point
 from RadiShPICR.ConstraintBasedRelativity.mass_density import mass_density_at_point
-from RadiShPICR.ConstraintBasedRelativity.evolve import step, step_rk4
+from RadiShPICR.ConstraintBasedRelativity.evolve import (
+    step,
+    step_rk4,
+    step_rk4_with_metric,
+)
 from RadiShPICR.particles.particle_shapes import interpolate_field_to_particles
 from RadiShPICR.ConstraintBasedRelativity import build_radial_grid, calculate_metric
 from RadiShPICR.ConstraintBasedRelativity.energy_momentum_tensor import Srr_at_point, Sr_at_point
@@ -113,6 +117,27 @@ def test_particle_species_preserves_per_particle_weights_under_jit():
     assert jnp.allclose(jitted_weight, eager_weight)
     assert jnp.allclose(jitted_charge, eager_charge)
     assert jnp.allclose(jitted_mass, eager_mass)
+
+
+def test_particle_species_supports_explicit_lower_and_compile():
+    species = make_species(
+        charge=2.0,
+        mass=4.0,
+        weight=jnp.asarray([0.25, 0.75]),
+    )
+    compiled_properties = jax.jit(
+        lambda particles: (
+            particles.weight,
+            particles.get_charge(),
+            particles.get_mass(),
+        )
+    ).lower(species).compile()
+
+    weight, charge, mass = compiled_properties(species)
+
+    assert jnp.allclose(weight, jnp.asarray([0.25, 0.75]))
+    assert jnp.allclose(charge, jnp.asarray([0.5, 1.5]))
+    assert jnp.allclose(mass, jnp.asarray([1.0, 3.0]))
 
 
 def test_pad_value_adds_small_denominator_offset_with_input_dtype():
@@ -665,6 +690,119 @@ def test_step_freezes_particle_that_crosses_center(monkeypatch):
 
 def test_step_rk4_imports_as_additional_timestep_option():
     assert callable(step_rk4)
+    assert callable(step_rk4_with_metric)
+
+
+def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
+    monkeypatch,
+):
+    metric_stage_positions = []
+
+    def fake_calculate_metric(stage_particles, r_grid, dr):
+        metric_stage_positions.append(stage_particles.r.copy())
+        return make_metric_result(r_grid)
+
+    def fake_geodesic_terms(stage_particles, U_state):
+        return (
+            jnp.ones_like(stage_particles.r),
+            jnp.zeros_like(stage_particles.ur),
+        )
+
+    def fake_lorentz_terms(stage_particles, U_state):
+        return jnp.zeros_like(stage_particles.ur)
+
+    monkeypatch.setattr(
+        constraint_evolve,
+        "calculate_metric",
+        fake_calculate_metric,
+    )
+    monkeypatch.setattr(
+        constraint_evolve,
+        "compute_geodesic_terms",
+        fake_geodesic_terms,
+    )
+    monkeypatch.setattr(
+        constraint_evolve,
+        "compute_lorentz_terms",
+        fake_lorentz_terms,
+    )
+
+    particles = make_species()
+    r_grid = jnp.linspace(0.0, 1.0, 5)
+    initial_metric = make_metric_result(r_grid)
+
+    updated_particles, final_metric = step_rk4_with_metric(
+        particles,
+        initial_metric,
+        r_grid,
+        r_grid[1] - r_grid[0],
+        dt=0.1,
+    )
+
+    assert updated_particles is particles
+    assert len(metric_stage_positions) == 4
+    assert jnp.allclose(metric_stage_positions[-1], updated_particles.r)
+    assert jnp.allclose(final_metric[-1], r_grid)
+
+
+def test_step_rk4_with_metric_matches_existing_multistep_path():
+    def make_collapse_particles():
+        return particle_species(
+            name="test",
+            charge=0.2,
+            mass=1.0,
+            weight=jnp.asarray([0.5, 1.5]),
+            r=jnp.asarray([2.5, 7.5]),
+            ur=jnp.asarray([0.01, -0.01]),
+            phi=jnp.asarray([0.0, 0.2]),
+            uphi=jnp.asarray([0.0, 0.0]),
+            shape_mode="linear",
+        )
+
+    reference_particles = make_collapse_particles()
+    cached_particles = make_collapse_particles()
+    r_grid = jnp.linspace(0.0, 10.0, 9)
+    dr = r_grid[1] - r_grid[0]
+    dt = 1.0e-4
+    reference_metric = calculate_metric(reference_particles, r_grid, dr)
+    cached_metric = calculate_metric(cached_particles, r_grid, dr)
+
+    for _ in range(2):
+        reference_particles = step_rk4(
+            reference_particles,
+            r_grid,
+            dr,
+            dt,
+        )
+        reference_metric = calculate_metric(
+            reference_particles,
+            r_grid,
+            dr,
+        )
+        cached_particles, cached_metric = step_rk4_with_metric(
+            cached_particles,
+            cached_metric,
+            r_grid,
+            dr,
+            dt,
+        )
+
+    assert jnp.allclose(cached_particles.r, reference_particles.r)
+    assert jnp.allclose(cached_particles.phi, reference_particles.phi)
+    assert jnp.allclose(cached_particles.ur, reference_particles.ur)
+    assert jnp.allclose(cached_particles.uphi, reference_particles.uphi)
+
+    for cached_field, reference_field in zip(
+        cached_metric[:6],
+        reference_metric[:6],
+    ):
+        assert jnp.allclose(cached_field, reference_field)
+    for cached_source, reference_source in zip(
+        cached_metric[6],
+        reference_metric[6],
+    ):
+        assert jnp.allclose(cached_source, reference_source)
+    assert jnp.allclose(cached_metric[7], reference_metric[7])
 
 
 def test_step_rk4_updates_current_particle_class_in_place_and_preserves_uphi(monkeypatch):

@@ -38,8 +38,6 @@ def dchidt(metric: Z4C_Metric, matter_terms):
 
 
     # SOMMERFELD BOUNDARY CONDITION FOR CHI AT OUTER BOUNDARY
-    dchidr = first_derivative(chi, metric.dr, parity=1)
-
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
@@ -76,8 +74,6 @@ def dgrrdt(metric: Z4C_Metric, matter_terms):
 
 
     # SOMMERFELD BOUNDARY CONDITION FOR GRR AT OUTER BOUNDARY
-    dgrrdr = first_derivative(grr, metric.dr, parity=1)
-
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
@@ -116,8 +112,6 @@ def dgtdt(metric: Z4C_Metric, matter_terms):
 
 
     # SOMMERFELD BOUNDARY CONDITION FOR GT AT OUTER BOUNDARY
-    dgtdr = first_derivative(gt, metric.dr, parity=1)
-
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 

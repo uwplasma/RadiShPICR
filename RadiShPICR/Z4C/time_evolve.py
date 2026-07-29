@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 from RadiShPICR.Z4C.constraint_terms import dGammadt, dthetadt
@@ -5,7 +6,10 @@ from RadiShPICR.Z4C.extrinsic_curvature import dArrdt, dAtdt, dKhdt
 from RadiShPICR.Z4C.shift_and_lapse import dalphadt, dbetadt
 from RadiShPICR.Z4C.spatial_metric import dchidt, dgrrdt, dgtdt
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
-from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
+from RadiShPICR.Z4C.energy_momentum_tensor import (
+    compute_radial_matter_terms,
+    initialize_vacuum_matter_terms,
+)
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
 from RadiShPICR.Z4C.utils import (
     trace_free_curvature,
@@ -28,9 +32,9 @@ def metric_time_derivatives(metric: Z4C_Metric, matter_terms):
         At=dAtdt(metric, matter_terms),
         theta=dthetadt(metric, matter_terms),
         Gamma=dGammadt(metric, matter_terms),
-        kappa=zero_dr,
-        eta=zero_dr,
-        nu=zero_dr,
+        kappa=jnp.zeros_like(metric.kappa),
+        eta=jnp.zeros_like(metric.eta),
+        nu=jnp.zeros_like(metric.nu),
         r=zeros,
         dr=zero_dr,
     )
@@ -128,6 +132,54 @@ def rk4_step(metric: Z4C_Metric, matter_terms, dt):
     weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
 
     return _add_metric_derivative(metric, weighted_derivative, dt / 6.0)
+
+
+def _metric_fields_finite(metric):
+    evolved_fields = jnp.stack(
+        (
+            metric.alpha,
+            metric.beta,
+            metric.conformal_grr,
+            metric.conformal_gt,
+            metric.chi,
+            metric.Kh,
+            metric.Arr,
+            metric.At,
+            metric.theta,
+            metric.Gamma,
+        )
+    )
+
+    return jnp.all(jnp.isfinite(evolved_fields))
+
+
+def advance_vacuum_steps(metric: Z4C_Metric, dt, num_steps):
+    """Advance several vacuum steps in one compiled scan."""
+
+    def advance_one_step(carry, local_step):
+        metric, first_nonfinite_step = carry
+        matter_terms = initialize_vacuum_matter_terms(metric)
+        metric = rk4_step(metric, matter_terms, dt)
+        finite = _metric_fields_finite(metric)
+        first_nonfinite_step = jnp.where(
+            jnp.logical_and(first_nonfinite_step < 0, jnp.logical_not(finite)),
+            local_step.astype(first_nonfinite_step.dtype),
+            first_nonfinite_step,
+        )
+
+        return (metric, first_nonfinite_step), None
+
+    initial_state = (
+        metric,
+        jnp.asarray(-1, dtype=jnp.int32),
+    )
+    (metric, first_nonfinite_step), _ = jax.lax.scan(
+        advance_one_step,
+        initial_state,
+        jnp.arange(num_steps),
+    )
+
+    return metric, first_nonfinite_step
 
 
 def _copy_particle_state(particles, r, phi, ur, uphi):

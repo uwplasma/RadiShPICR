@@ -1,11 +1,9 @@
 import jax.numpy as jnp
 from jax import lax
 
-from RadiShPICR.ConstraintBasedRelativity.charge_density import charge_density_at_point
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.ConstraintBasedRelativity.mass_density import mass_density_at_point
-from RadiShPICR.ConstraintBasedRelativity.energy_momentum_tensor import Srr_at_point, Sr_at_point
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value
+from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, radial_shell_volume
+from RadiShPICR.particles.particle_shapes import radial_shape_stencil
 
 
 def _safe_radius(r, dr):
@@ -103,26 +101,60 @@ def dr_Er(U_state, dr=None):
     return jnp.where(r == 0.0, center_term, interior_term)
 
 
-def _source_terms_at_point(particles, A_at_point, radial_coordinate, grid):
-    mass_density = mass_density_at_point(
-        particles,
-        A_at_point,
-        radial_coordinate,
-        grid,
+def _source_terms_at_point(
+    particles,
+    A_at_point,
+    radial_coordinate,
+    grid,
+    particle_stencil=None,
+):
+    r_particle, _ = particles.get_positions()
+    ur, uphi = particles.get_velocities()
+    dr = grid.dr
+
+    if particle_stencil is None:
+        particle_stencil = radial_shape_stencil(
+            r_particle,
+            grid,
+            shape_mode=particles.get_shape(),
+        )
+
+    indices, stencil_weights = particle_stencil
+    floating_index = (radial_coordinate - grid.r_full[0]) / dr
+    grid_index = jnp.rint(floating_index).astype(indices.dtype)
+    weights = jnp.sum(
+        jnp.where(indices == grid_index, stencil_weights, 0.0),
+        axis=0,
     )
-    charge_density = charge_density_at_point(
-        particles,
-        A_at_point,
-        radial_coordinate,
-        grid,
+
+    safe_r = jnp.maximum(
+        jnp.asarray(radial_coordinate, dtype=r_particle.dtype),
+        0.5 * dr,
     )
-    Srr = Srr_at_point(particles, A_at_point, radial_coordinate, grid)
-    Sr = Sr_at_point(particles, A_at_point, radial_coordinate, grid)
+    A_for_denominators = pad_value(A_at_point)
+    lorentz_factor = jnp.sqrt(
+        1.0
+        + ur**2 / A_for_denominators**2
+        + uphi**2 / (A_for_denominators**2 * safe_r**2)
+    )
+    cell_volume = radial_shell_volume(
+        A_for_denominators,
+        radial_coordinate,
+        dr,
+    )
+
+    weighted_mass = particles.get_mass() * weights
+    mass_density = jnp.sum(weighted_mass * lorentz_factor / cell_volume)
+    charge_density = jnp.sum(particles.get_charge() * weights / cell_volume)
+    Srr = jnp.sum(
+        weighted_mass * ur**2 / (cell_volume * lorentz_factor)
+    )
+    Sr = jnp.sum(weighted_mass * ur / cell_volume)
 
     return mass_density, charge_density, Srr, Sr
 
 
-def heuns_method(U_state, dr, particles, grid):
+def heuns_method(U_state, dr, particles, grid, particle_stencil=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
 
     dA_dr = dr_A(U_state)
@@ -136,7 +168,11 @@ def heuns_method(U_state, dr, particles, grid):
     alpha_predictor = alpha + dalpha_dr * dr
     Er_predictor = Er + dE_dr * dr
     source_terms_predictor = _source_terms_at_point(
-        particles, A_predictor, r_predictor, grid
+        particles,
+        A_predictor,
+        r_predictor,
+        grid,
+        particle_stencil,
     )
     Krr_predictor = Krr_from_state(
         (A_predictor, phi_predictor, alpha_predictor, Krr, beta_over_r, Er_predictor, source_terms_predictor, r_predictor)
@@ -163,7 +199,11 @@ def heuns_method(U_state, dr, particles, grid):
     alpha_corrected = alpha + 0.5 * (dalpha_dr + dalpha_dr_predictor) * dr
     Er_corrected = Er + 0.5 * (dE_dr + dE_dr_predictor) * dr
     source_terms_corrected = _source_terms_at_point(
-        particles, A_corrected, r_predictor, grid
+        particles,
+        A_corrected,
+        r_predictor,
+        grid,
+        particle_stencil,
     )
     Krr_corrected = Krr_from_state(
         (
@@ -200,6 +240,11 @@ def calculate_metric(particles, r_grid, dr):
         dr=dr,
         r_max=r_grid[-1],
     )
+    particle_stencil = radial_shape_stencil(
+        particles.r,
+        grid,
+        shape_mode=particles.get_shape(),
+    )
 
     initial_A = jnp.asarray(1.0, dtype=r_grid.dtype)
     initial_phi = jnp.asarray(0.0, dtype=r_grid.dtype)
@@ -213,6 +258,7 @@ def calculate_metric(particles, r_grid, dr):
         initial_A,
         initial_r,
         grid,
+        particle_stencil,
     )
 
     state = (
@@ -227,7 +273,13 @@ def calculate_metric(particles, r_grid, dr):
     )
 
     def radial_step(state, local_dr):
-        state = heuns_method(state, local_dr, particles, grid)
+        state = heuns_method(
+            state,
+            local_dr,
+            particles,
+            grid,
+            particle_stencil,
+        )
         A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = state
         mass_density, charge_density, Srr, Sr = source_terms
 
