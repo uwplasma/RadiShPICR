@@ -4,6 +4,7 @@ from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative, sixt
 
 def dalphadt(metric: Z4C_Metric, matter_terms):
     alpha = metric.alpha
+    grr   = metric.conformal_grr
     beta = metric.beta
     Kh = metric.Kh
     nu = metric.nu
@@ -20,6 +21,15 @@ def dalphadt(metric: Z4C_Metric, matter_terms):
 
     dalphadt += nu / 64 * (sixth_derivative(alpha, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of alpha
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR ALPHA AT OUTER BOUNDARY
+
+    lapse_speed = -beta[-1] + jnp.sqrt(2 * alpha[-1] ) / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dalphadt = dalphadt.at[-1].set(  - lapse_speed * (  dalphadr[-1]    +   alpha[-1] / metric.r[-1] )  )
+    # set the time derivative of alpha at the outer boundary using the Sommerfeld boundary condition
 
     return dalphadt
 
@@ -43,5 +53,16 @@ def dbetadt(metric: Z4C_Metric, matter_terms):
 
     dbetadt += nu / 64 * (sixth_derivative(beta, metric.dr, parity=-1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of beta
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR BETA AT OUTER BOUNDARY
+
+    shift_speed = -beta[-1] * jnp.sqrt(5/2)
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dbetadt = dbetadt.at[-1].set(  - shift_speed * (  dbetadr[-1]    +   beta[-1] / metric.r[-1] )  )
+    # set the time derivative of beta at the outer boundary using the Sommerfeld boundary condition
+
+
 
     return dbetadt

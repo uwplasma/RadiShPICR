@@ -9,6 +9,7 @@ def dchidt(metric: Z4C_Metric, matter_terms):
     chi = metric.chi
     Kh = metric.Kh
     chi = metric.chi
+    grr = metric.conformal_grr
     theta = metric.theta
     nu   = metric.nu
     # unpack the metric and matter terms
@@ -34,6 +35,16 @@ def dchidt(metric: Z4C_Metric, matter_terms):
 
     dchidt += nu / 64 * (sixth_derivative(chi, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of chi
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR CHI AT OUTER BOUNDARY
+    dchidr = first_derivative(chi, metric.dr, parity=1)
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dchidt = dchidt.at[-1].set(  - speed_of_light * (  dchidr[-1]    +   chi[-1] / metric.r[-1] )  )
+    # set the time derivative of chi at the outer boundary using the Sommerfeld boundary condition
 
     return dchidt
 
@@ -63,6 +74,17 @@ def dgrrdt(metric: Z4C_Metric, matter_terms):
     dgrrdt += nu / 64 * (sixth_derivative(grr, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of grr
 
+
+    # SOMMERFELD BOUNDARY CONDITION FOR GRR AT OUTER BOUNDARY
+    dgrrdr = first_derivative(grr, metric.dr, parity=1)
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dgrrdt = dgrrdt.at[-1].set(  - speed_of_light * (  dgrrdr[-1]    +   grr[-1] / metric.r[-1] )  )
+    # set the time derivative of grr at the outer boundary using the Sommerfeld boundary condition
+
+
     return dgrrdt
 
 def dgtdt(metric: Z4C_Metric, matter_terms):
@@ -90,5 +112,16 @@ def dgtdt(metric: Z4C_Metric, matter_terms):
 
     dgtdt += nu / 64 * (sixth_derivative(gt, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of gt
+
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR GT AT OUTER BOUNDARY
+    dgtdr = first_derivative(gt, metric.dr, parity=1)
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dgtdt = dgtdt.at[-1].set(  - speed_of_light * (  dgtdr[-1]    +   gt[-1] / metric.r[-1] )  )
+    # set the time derivative of gt at the outer boundary using the Sommerfeld boundary condition
 
     return dgtdt

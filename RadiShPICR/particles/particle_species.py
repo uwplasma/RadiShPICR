@@ -8,7 +8,8 @@ class particle_species:
         self.name = name
         self.charges = charge
         self.masses = mass
-        self.weight = weight
+        particle_weight = jnp.asarray(weight, dtype=jnp.asarray(r).dtype)
+        self.weight = jnp.broadcast_to(particle_weight, jnp.shape(r))
         self.r = r
         self.ur = ur
         self.phi = phi

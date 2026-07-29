@@ -91,6 +91,18 @@ def dthetadt(metric: Z4C_Metric, matter_terms):
     dthetadt += nu / 64 * (sixth_derivative(theta, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of theta
 
+
+    # SOMMERFELD BOUNDARY CONDITION FOR THETA AT OUTER BOUNDARY
+    dthetadr = first_derivative(theta, metric.dr, parity=1)
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dthetadt = dthetadt.at[-1].set(  - speed_of_light * (  dthetadr[-1]    +   theta[-1] / metric.r[-1] )  )
+    # set the time derivative of theta at the outer boundary using the Sommerfeld boundary condition
+    
+
+
     return dthetadt
 
 
@@ -160,5 +172,14 @@ def dGammadt(metric: Z4C_Metric, matter_terms):
 
     dGammadt += nu / 64 * (sixth_derivative(Gamma, metric.dr, parity=-1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of Gamma
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR GAMMA AT OUTER BOUNDARY
+
+    shift_speed = -beta[-1] * jnp.sqrt(5/2)
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dGammadt = dGammadt.at[-1].set(  - shift_speed * (  dGammadr[-1]    +   Gamma[-1] / metric.r[-1] )  )
+    # set the time derivative of Gamma at the outer boundary using the Sommerfeld boundary condition
 
     return dGammadt

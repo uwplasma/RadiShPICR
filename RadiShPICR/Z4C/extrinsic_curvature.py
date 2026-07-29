@@ -65,6 +65,16 @@ def dKhdt(metric: Z4C_Metric, matter_terms):
     dKhdt += nu / 64 * (sixth_derivative(Kh, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of Kh
 
+
+    # SOMMERFELD BOUNDARY CONDITION FOR ALPHA AT OUTER BOUNDARY
+
+    lapse_speed = -beta[-1] + jnp.sqrt(2 * alpha[-1] ) / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dKhdt = dKhdt.at[-1].set(  - lapse_speed * (  dKhdr[-1]    +   Kh[-1] / metric.r[-1] )  )
+    # set the time derivative of Kh at the outer boundary using the Sommerfeld boundary condition
+
+
     return dKhdt
 
 
@@ -192,6 +202,16 @@ def dArrdt(metric: Z4C_Metric, matter_terms):
     dArrdt += nu / 64 * (sixth_derivative(Arr, metric.dr, parity=1)) * (metric.dr ** 5)
     # add the Kreiss-Oliger dissipation term to the time derivative of Arr
 
+
+    # SOMMERFELD BOUNDARY CONDITION FOR THETA AT OUTER BOUNDARY
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dArrdt = dArrdt.at[-1].set(  - speed_of_light * (  dArrdr[-1]    +   Arr[-1] / metric.r[-1] )  )
+    # set the time derivative of theta at the outer boundary using the Sommerfeld boundary condition
+    
+
     return dArrdt
 
 
@@ -315,5 +335,15 @@ def dAtdt(metric: Z4C_Metric, matter_terms):
     # compute the time derivative of At using the Z4C evolution equations
 
     dAtdt += nu / 64 * (sixth_derivative(At, metric.dr, parity=1)) * (metric.dr ** 5)   
+
+
+    # SOMMERFELD BOUNDARY CONDITION FOR THETA AT OUTER BOUNDARY
+
+    speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
+    # compute the speed of light at the outer boundary using the lapse and shift
+
+    dAtdt = dAtdt.at[-1].set(  - speed_of_light * (  dAtdr[-1]    +   At[-1] / metric.r[-1] )  )
+    # set the time derivative of At at the outer boundary using the Sommerfeld boundary condition
+
 
     return dAtdt
