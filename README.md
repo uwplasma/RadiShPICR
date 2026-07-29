@@ -31,5 +31,5 @@ STILL UNDER DEVELOPMENT.  The code is not yet ready for production use.
 CHECKLIST:
 - [ ] Add more tests for the constraint-based relativity implementation.
 - [ ] Fix definition of angular position update in constraint-based relativity implementation.
-- [ ] Finish implementation of single-puncture black hole in Z4C.
+- [X] Finish implementation of single-puncture black hole in Z4C.
 - [ ] Add EM logic for Z4C.
