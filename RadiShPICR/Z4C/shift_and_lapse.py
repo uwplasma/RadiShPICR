@@ -28,7 +28,7 @@ def dalphadt(metric: Z4C_Metric, matter_terms):
     lapse_speed = -beta[-1] + jnp.sqrt(2 * alpha[-1] ) / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dalphadt = dalphadt.at[-1].set(  - lapse_speed * (  dalphadr[-1]    +   alpha[-1] / metric.r[-1] )  )
+    dalphadt = dalphadt.at[-1].set(  - lapse_speed * (  dalphadr[-1]    +   (alpha[-1] - 1) / metric.r[-1] )  )
     # set the time derivative of alpha at the outer boundary using the Sommerfeld boundary condition
 
     return dalphadt

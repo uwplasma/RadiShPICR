@@ -141,7 +141,7 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
             name="test",
             charge=3.0,
             mass=2.0,
-            weight=0.25,
+            weight=jnp.asarray([0.25, 0.75]),
             r=jnp.asarray([0.25, 7.75]),
             ur=jnp.asarray([0.0, 0.0]),
             phi=jnp.asarray([0.0, 0.0]),
@@ -168,17 +168,16 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
 
         deposited_mass = jnp.sum(mass_density * cell_volume)
         deposited_charge = jnp.sum(charge_density * cell_volume)
-        particle_count = particles.r.shape[0]
 
         assert jnp.allclose(mass_density[boundary_indices], 0.0)
         assert jnp.allclose(charge_density[boundary_indices], 0.0)
         assert jnp.allclose(
             deposited_mass,
-            particle_count * particles.get_mass(),
+            jnp.sum(particles.get_mass()),
         )
         assert jnp.allclose(
             deposited_charge,
-            particle_count * particles.get_charge(),
+            jnp.sum(particles.get_charge()),
         )
 
 
@@ -230,7 +229,7 @@ def test_charge_density_is_independent_of_particle_momentum():
         jitted_charge_density = jax.jit(deposit_charge)(moving_particles)
 
         deposited_charge = jnp.sum(moving_charge_density * cell_volume)
-        expected_charge = moving_particles.r.shape[0] * moving_particles.get_charge()
+        expected_charge = jnp.sum(moving_particles.get_charge())
 
         assert jnp.allclose(moving_charge_density, stationary_charge_density)
         assert jnp.allclose(jitted_charge_density, moving_charge_density)

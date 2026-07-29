@@ -149,7 +149,11 @@ def test_charged_vacuum_rescale_recovers_known_coordinate_factors():
 
 
 def test_total_particle_mass_and_charge_sum_getter_values_over_particles():
-    particles = make_species(charge=1.5, mass=2.0, weight=0.5)
+    particles = make_species(
+        charge=1.5,
+        mass=2.0,
+        weight=jnp.asarray([0.25, 0.50, 0.75]),
+    )
 
     assert jnp.allclose(total_particle_mass(particles), 3.0)
     assert jnp.allclose(total_particle_charge(particles), 2.25)
@@ -222,6 +226,7 @@ def test_schwarzschild_rescale_matches_outer_boundary_cell():
     assert jnp.allclose(rescaled_particles.ur, particles.ur / expected_X_r)
     assert jnp.allclose(rescaled_particles.phi, particles.phi)
     assert jnp.allclose(rescaled_particles.uphi, particles.uphi)
+    assert jnp.allclose(rescaled_particles.weight, particles.weight)
 
 
 def test_vacuum_rescale_pads_zero_lapse_rescaling_denominator():

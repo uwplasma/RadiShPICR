@@ -85,9 +85,34 @@ def test_particle_species_current_api():
     assert jnp.allclose(phi, species.phi)
     assert jnp.allclose(ur, species.ur)
     assert jnp.allclose(uphi, species.uphi)
-    assert species.get_charge() == 1.0
-    assert species.get_mass() == 2.0
+    assert species.weight.shape == species.r.shape
+    assert jnp.allclose(species.weight, jnp.asarray([0.5, 0.5]))
+    assert jnp.allclose(species.get_charge(), jnp.asarray([1.0, 1.0]))
+    assert jnp.allclose(species.get_mass(), jnp.asarray([2.0, 2.0]))
     assert species.get_shape() == "nearest"
+
+
+def test_particle_species_preserves_per_particle_weights_under_jit():
+    species = make_species(
+        charge=2.0,
+        mass=4.0,
+        weight=jnp.asarray([0.25, 0.75]),
+    )
+
+    def macroparticle_properties(particles):
+        return particles.weight, particles.get_charge(), particles.get_mass()
+
+    eager_weight, eager_charge, eager_mass = macroparticle_properties(species)
+    jitted_weight, jitted_charge, jitted_mass = jax.jit(
+        macroparticle_properties
+    )(species)
+
+    assert jnp.allclose(eager_weight, jnp.asarray([0.25, 0.75]))
+    assert jnp.allclose(eager_charge, jnp.asarray([0.5, 1.5]))
+    assert jnp.allclose(eager_mass, jnp.asarray([1.0, 3.0]))
+    assert jnp.allclose(jitted_weight, eager_weight)
+    assert jnp.allclose(jitted_charge, eager_charge)
+    assert jnp.allclose(jitted_mass, eager_mass)
 
 
 def test_pad_value_adds_small_denominator_offset_with_input_dtype():
@@ -317,7 +342,7 @@ def test_step_rk4_jit_matches_eager_output():
         name="test",
         charge=0.0,
         mass=1.0,
-        weight=1.0,
+        weight=jnp.asarray([0.5, 1.5]),
         r=jnp.asarray([2.5, 7.5]),
         ur=jnp.asarray([0.01, -0.01]),
         phi=jnp.asarray([0.0, 0.2]),
@@ -328,7 +353,7 @@ def test_step_rk4_jit_matches_eager_output():
         name="test",
         charge=0.0,
         mass=1.0,
-        weight=1.0,
+        weight=jnp.asarray([0.5, 1.5]),
         r=jnp.asarray([2.5, 7.5]),
         ur=jnp.asarray([0.01, -0.01]),
         phi=jnp.asarray([0.0, 0.2]),
@@ -347,6 +372,8 @@ def test_step_rk4_jit_matches_eager_output():
     assert jnp.allclose(jitted_result.phi, eager_result.phi)
     assert jnp.allclose(jitted_result.ur, eager_result.ur)
     assert jnp.allclose(jitted_result.uphi, eager_result.uphi)
+    assert jnp.allclose(jitted_result.weight, eager_particles.weight)
+    assert jnp.allclose(eager_result.weight, eager_particles.weight)
 
 
 def test_particle_derivatives_use_raw_particle_and_metric_coordinates(monkeypatch):

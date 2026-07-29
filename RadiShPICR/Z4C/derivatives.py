@@ -9,7 +9,7 @@ def first_derivative(field, dr, parity=-1):
     Nr = field.shape[0]
     # get the number of grid points
 
-    field_ = jnp.zeros(shape=(Nr+2)) # initialize dummy array
+    field_ = jnp.zeros(shape=(Nr+2), dtype=field.dtype) # initialize dummy array
     field_ = field_.at[2:].set(field) # add field
 
     field_ = field_.at[0].set(field_[3] * parity)  # set the first point using parity
@@ -52,7 +52,7 @@ def second_derivative(field, dr, parity=-1):
     # get the number of grid points
 
 
-    field_ = jnp.zeros(shape=(Nr+2)) # initialize dummy array
+    field_ = jnp.zeros(shape=(Nr+2), dtype=field.dtype) # initialize dummy array
     field_ = field_.at[2:].set(field) # add field
 
     field_ = field_.at[0].set(field_[3] * parity)  # set the first point using parity
@@ -95,7 +95,7 @@ def sixth_derivative(field, dr, parity=-1):
     Nr = field.shape[0]
     # get the number of grid points
 
-    field_ = jnp.zeros(shape=(Nr+3)) # initialize dummy array
+    field_ = jnp.zeros(shape=(Nr+3), dtype=field.dtype) # initialize dummy array
     field_ = field_.at[3:].set(field) # add field
     
     field_ = field_.at[0].set(field_[5] * parity)  # set the first point using parity
