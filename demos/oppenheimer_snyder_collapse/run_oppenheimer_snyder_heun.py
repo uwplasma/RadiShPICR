@@ -276,7 +276,8 @@ SAVE_EVERY = 1
 # save every completed step by default for compatibility
 
 total_star_mass = 1.0
-run_time        = 50.0 / total_star_mass # 50 units of M
+target_schwarzschild_time = 45.1 * total_star_mass
+schwarzschild_time_tolerance = 1.0e-10 * total_star_mass
 surface_areal_radius = 10.0
 number_density = total_star_mass / (4/3 * jnp.pi * surface_areal_radius**3)
 # define the mass of the ball of dust and the outer radius of the ball of dust
@@ -328,6 +329,12 @@ output_directory = (
     / "outputs"
     / "heun_oppenheimer_snyder"
 )
+if output_directory.exists() and any(output_directory.iterdir()):
+    raise RuntimeError(
+        f"Output directory is not empty: {output_directory}. "
+        "Move or clear it before starting a new collapse run."
+    )
+
 U_state_directory = output_directory / "U_state"
 phase_space_directory = output_directory / "phase_space"
 U_state_directory.mkdir(parents=True, exist_ok=True)
@@ -419,7 +426,6 @@ def write_schwarzschild_snapshot(
     solver_U_state,
     solver_particles,
     step,
-    solver_time,
     schwarzschild_time,
 ):
     U_state, diagnostic_particles, _ = rescale_to_schwarzschild_coordinates(
@@ -447,7 +453,6 @@ def write_schwarzschild_snapshot(
         step=int(step),
         time=float(schwarzschild_time),
         schwarzschild_time=float(schwarzschild_time),
-        solver_time=float(solver_time),
     )
 
     phase_space_path = phase_space_directory / (
@@ -461,7 +466,6 @@ def write_schwarzschild_snapshot(
         step=int(step),
         time=float(schwarzschild_time),
         schwarzschild_time=float(schwarzschild_time),
-        solver_time=float(solver_time),
         species_name=diagnostic_particles.name,
     )
 
@@ -471,10 +475,7 @@ def write_schwarzschild_snapshot(
 solver_U_state = calculate_metric(particles, grid.r_full, grid.dr)
 # solve for the initial metric for the particles
 
-solver_time = 0.0
 step = 0
-dt = freefall_collapse_time_step(solver_U_state)
-# define the initial time step based on the free fall time step of the system
 schwarzschild_time = 0.0
 _, X_t = schwarzschild_rescale_factors(
     solver_U_state,
@@ -484,29 +485,41 @@ write_schwarzschild_snapshot(
     solver_U_state,
     particles,
     step,
-    solver_time,
     schwarzschild_time,
 )
 
 
 with tqdm(
-    total=run_time,
-    initial=solver_time,
+    total=target_schwarzschild_time,
+    initial=schwarzschild_time,
     desc="evolving stellar collapse",
     unit="t",
 ) as progress_bar:
-    while solver_time < run_time:
+    while (
+        target_schwarzschild_time - schwarzschild_time
+        > schwarzschild_time_tolerance
+    ):
         freefall_dt = freefall_collapse_time_step(solver_U_state)
         crossing_dt = particle_crossing_time_step(
             particles,
             solver_U_state,
             grid.dr,
         )
-        trial_dt = min(freefall_dt, crossing_dt, run_time - solver_time)
-        # limit the trial by collapse, particle crossing, and the remaining run time
+        remaining_schwarzschild_time = (
+            target_schwarzschild_time - schwarzschild_time
+        )
+        trial_dt = min(
+            freefall_dt,
+            crossing_dt,
+            remaining_schwarzschild_time / float(X_t),
+        )
+        # The RK4 step remains in solver time. The last step is shortened using
+        # the current Schwarzschild-time scale before checking its endpoint.
 
         accepted = False
-        while trial_dt >= MINIMUM_TRIAL_TIME_STEP:
+        endpoint_trial = trial_dt < MINIMUM_TRIAL_TIME_STEP
+        while trial_dt >= MINIMUM_TRIAL_TIME_STEP or endpoint_trial:
+            endpoint_trial = False
             trial_particles = copy_particles(particles)
             trial_particles, trial_U_state = step_rk4_with_metric(
                 trial_particles,
@@ -516,52 +529,73 @@ with tqdm(
                 trial_dt,
             )
 
-            if solver_state_is_acceptable(trial_U_state):
-                accepted = True
-                break
+            if not solver_state_is_acceptable(trial_U_state):
+                trial_dt *= 0.5
+                continue
 
-            trial_dt *= 0.5
+            _, trial_X_t = schwarzschild_rescale_factors(
+                trial_U_state,
+                total_star_mass,
+            )
+            trial_schwarzschild_dt = 0.5 * (
+                float(X_t) + float(trial_X_t)
+            ) * trial_dt
+
+            if (
+                trial_schwarzschild_dt
+                > remaining_schwarzschild_time
+                + schwarzschild_time_tolerance
+            ):
+                trial_dt *= (
+                    remaining_schwarzschild_time
+                    / trial_schwarzschild_dt
+                )
+                endpoint_trial = trial_dt < MINIMUM_TRIAL_TIME_STEP
+                continue
+
+            accepted = True
+            break
 
         if not accepted:
             print(
                 "No finite positive Schwarzschild-lapse trial state found above "
                 f"dt={MINIMUM_TRIAL_TIME_STEP:.3e}; preserving the last "
-                f"accepted state at step {step}, solver time {solver_time:.3e}, "
-                f"schwarzschild time {schwarzschild_time:.3e}."
+                f"accepted state at step {step}, Schwarzschild time "
+                f"{schwarzschild_time:.3e}."
             )
             break
 
-        previous_solver_time = solver_time
-        previous_X_t = float(X_t)
+        previous_schwarzschild_time = schwarzschild_time
         particles = trial_particles
         solver_U_state = trial_U_state
-        solver_time += trial_dt
         step += 1
-        _, X_t = schwarzschild_rescale_factors(
-            solver_U_state,
-            total_star_mass,
-        )
-        schwarzschild_time += 0.5 * (
-            previous_X_t + float(X_t)
-        ) * trial_dt
+        X_t = trial_X_t
+        schwarzschild_time += trial_schwarzschild_dt
+
+        if (
+            target_schwarzschild_time - schwarzschild_time
+            <= schwarzschild_time_tolerance
+        ):
+            schwarzschild_time = target_schwarzschild_time
 
         should_save = (
             step % save_every == 0
-            or solver_time >= run_time
+            or schwarzschild_time >= target_schwarzschild_time
         )
         if should_save:
             write_schwarzschild_snapshot(
                 solver_U_state,
                 particles,
                 step,
-                solver_time,
                 schwarzschild_time,
             )
 
         minimum_alpha = float(
             np.min(np.asarray(schwarzschild_lapse(solver_U_state)))
         )
-        progress_bar.update(solver_time - previous_solver_time)
+        progress_bar.update(
+            schwarzschild_time - previous_schwarzschild_time
+        )
         progress_bar.set_postfix(
             step=step,
             dt=f"{trial_dt:.3e}",
