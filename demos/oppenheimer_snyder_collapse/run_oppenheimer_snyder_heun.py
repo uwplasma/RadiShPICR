@@ -271,11 +271,11 @@ FREE_FALL_FRACTION = 0.05
 CROSSING_FRACTION = 0.25
 # fraction of one radial cell that particles may cross in one time step
 MINIMUM_TRIAL_TIME_STEP = 1.0e-6
-# stop when no finite positive-lapse trial can be found above this time step
+# stop when no finite positive Schwarzschild-lapse trial remains above this step
 SAVE_EVERY = 1
 # save every completed step by default for compatibility
 
-total_star_mass = 0.5
+total_star_mass = 1.0
 run_time        = 50.0 / total_star_mass # 50 units of M
 surface_areal_radius = 10.0
 number_density = total_star_mass / (4/3 * jnp.pi * surface_areal_radius**3)
@@ -377,6 +377,16 @@ def copy_particles(particles):
     )
 
 
+def schwarzschild_lapse(U_state):
+    alpha = U_state[2]
+    _, X_t = schwarzschild_rescale_factors(
+        U_state,
+        total_star_mass,
+    )
+
+    return alpha / X_t
+
+
 def solver_state_is_acceptable(U_state):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r_grid = U_state
     mass_density, charge_density, Srr, Sr = source_terms
@@ -398,7 +408,9 @@ def solver_state_is_acceptable(U_state):
         np.all(np.isfinite(np.asarray(values)))
         for values in solver_arrays
     )
-    minimum_alpha = float(np.min(np.asarray(alpha)))
+    diagnostic_alpha = np.asarray(schwarzschild_lapse(U_state))
+    finite_state = finite_state and np.all(np.isfinite(diagnostic_alpha))
+    minimum_alpha = float(np.min(diagnostic_alpha))
 
     return finite_state and minimum_alpha > 0.0
 
@@ -512,7 +524,7 @@ with tqdm(
 
         if not accepted:
             print(
-                "No finite positive-lapse trial state found above "
+                "No finite positive Schwarzschild-lapse trial state found above "
                 f"dt={MINIMUM_TRIAL_TIME_STEP:.3e}; preserving the last "
                 f"accepted state at step {step}, solver time {solver_time:.3e}, "
                 f"schwarzschild time {schwarzschild_time:.3e}."
@@ -547,7 +559,7 @@ with tqdm(
             )
 
         minimum_alpha = float(
-            np.min(np.asarray(solver_U_state[2]))
+            np.min(np.asarray(schwarzschild_lapse(solver_U_state)))
         )
         progress_bar.update(solver_time - previous_solver_time)
         progress_bar.set_postfix(
