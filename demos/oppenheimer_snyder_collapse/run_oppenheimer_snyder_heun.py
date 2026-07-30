@@ -41,9 +41,232 @@ from RadiShPICR.particles import particle_species
 calculate_metric = jax.jit(calculate_metric)
 step_rk4_with_metric = jax.jit(step_rk4_with_metric)
 
+
+def surface_isotropic_radius(surface_areal_radius, total_mass):
+    return 0.5 * (
+        surface_areal_radius
+        - total_mass
+        + math.sqrt(
+            surface_areal_radius
+            * (surface_areal_radius - 2.0 * total_mass)
+        )
+    )
+
+
+def homogeneous_rest_mass_profile(
+    mass_density,
+    total_mass,
+    surface_areal_radius,
+    num_quadrature_points=120000,
+):
+    mass_density = float(mass_density)
+    areal_grid = np.linspace(
+        0.0,
+        surface_areal_radius,
+        num_quadrature_points,
+    )
+    compactness = 2.0 * total_mass / surface_areal_radius
+    proper_volume_factor = np.sqrt(
+        1.0
+        - compactness * (areal_grid / surface_areal_radius) ** 2
+    )
+    rest_mass_integrand = (
+        4.0
+        * math.pi
+        * areal_grid**2
+        * mass_density
+        / proper_volume_factor
+    )
+
+    cumulative_rest_mass = np.zeros_like(areal_grid)
+    cumulative_rest_mass[1:] = np.cumsum(
+        0.5
+        * (rest_mass_integrand[:-1] + rest_mass_integrand[1:])
+        * np.diff(areal_grid)
+    )
+
+    return (
+        areal_grid,
+        cumulative_rest_mass,
+        float(cumulative_rest_mass[-1]),
+    )
+
+
+def isotropic_radius_from_areal(
+    areal_radius,
+    total_mass,
+    surface_areal_radius,
+):
+    """Initial isotropic radius of a homogeneous, time-symmetric dust sphere."""
+
+    areal_radius = np.asarray(areal_radius, dtype=float)
+    matched_surface_radius = surface_isotropic_radius(
+        surface_areal_radius,
+        total_mass,
+    )
+    compactness = 2.0 * total_mass / surface_areal_radius
+    interior_root = np.sqrt(
+        1.0
+        - compactness * (areal_radius / surface_areal_radius) ** 2
+    )
+    surface_root = math.sqrt(1.0 - compactness)
+
+    numerator = areal_radius / (1.0 + interior_root)
+    denominator = surface_areal_radius / (1.0 + surface_root)
+
+    return matched_surface_radius * numerator / denominator
+
+
+def initial_solver_coordinate_scale(total_mass, surface_areal_radius):
+    """Map the raw A(0)=1 chart to the initial Schwarzschild coordinates."""
+
+    compactness = 2.0 * total_mass / surface_areal_radius
+    surface_root = math.sqrt(1.0 - compactness)
+    matched_surface_radius = surface_isotropic_radius(
+        surface_areal_radius,
+        total_mass,
+    )
+    central_A = (
+        2.0
+        * surface_areal_radius
+        / (matched_surface_radius * (1.0 + surface_root))
+    )
+
+    return 1.0 / central_A
+
+
+def initialize_oppenheimer_snyder_particles(
+    grid,
+    initial_X_r,
+    mass_density,
+    total_mass,
+    surface_areal_radius,
+    total_particles,
+    shape_mode,
+):
+    areal_grid, cumulative_rest_mass, total_rest_mass = (
+        homogeneous_rest_mass_profile(
+            mass_density,
+            total_mass,
+            surface_areal_radius,
+        )
+    )
+    isotropic_grid = isotropic_radius_from_areal(
+        areal_grid,
+        total_mass,
+        surface_areal_radius,
+    )
+
+    # Populate every nearest-deposition shell inside the stellar surface.
+    grid_indices = np.arange(grid.r_full.size)
+    shell_inner_raw = np.maximum(
+        (grid_indices - 0.5) * grid.dr,
+        0.0,
+    )
+    shell_outer_raw = (grid_indices + 0.5) * grid.dr
+    stellar_surface_raw = isotropic_grid[-1] / initial_X_r
+    shell_outer_raw = np.minimum(
+        shell_outer_raw,
+        stellar_surface_raw,
+    )
+    occupied_shell = shell_outer_raw > shell_inner_raw
+    shell_inner_raw = shell_inner_raw[occupied_shell]
+    shell_outer_raw = shell_outer_raw[occupied_shell]
+
+    shell_inner_areal = np.interp(
+        initial_X_r * shell_inner_raw,
+        isotropic_grid,
+        areal_grid,
+    )
+    shell_outer_areal = np.interp(
+        initial_X_r * shell_outer_raw,
+        isotropic_grid,
+        areal_grid,
+    )
+    shell_inner_mass = np.interp(
+        shell_inner_areal,
+        areal_grid,
+        cumulative_rest_mass,
+    )
+    shell_outer_mass = np.interp(
+        shell_outer_areal,
+        areal_grid,
+        cumulative_rest_mass,
+    )
+
+    num_occupied_shells = shell_inner_mass.size
+    if total_particles < num_occupied_shells:
+        raise ValueError(
+            "total_particles must cover every occupied deposition shell"
+        )
+
+    particles_per_shell = np.full(
+        num_occupied_shells,
+        total_particles // num_occupied_shells,
+        dtype=int,
+    )
+    particles_per_shell[: total_particles % num_occupied_shells] += 1
+
+    particle_areal_radius = []
+    particle_weight = []
+    for inner_mass, outer_mass, shell_count in zip(
+        shell_inner_mass,
+        shell_outer_mass,
+        particles_per_shell,
+    ):
+        shell_fraction = (
+            np.arange(shell_count, dtype=float) + 0.5
+        ) / shell_count
+        particle_enclosed_mass = (
+            inner_mass
+            + shell_fraction * (outer_mass - inner_mass)
+        )
+        particle_areal_radius.append(
+            np.interp(
+                particle_enclosed_mass,
+                cumulative_rest_mass,
+                areal_grid,
+            )
+        )
+        particle_weight.append(
+            np.full(
+                shell_count,
+                (outer_mass - inner_mass) / shell_count,
+            )
+        )
+
+    particle_areal_radius = np.concatenate(particle_areal_radius)
+    particle_weight = np.concatenate(particle_weight)
+    particle_isotropic_radius = isotropic_radius_from_areal(
+        particle_areal_radius,
+        total_mass,
+        surface_areal_radius,
+    )
+    particle_solver_radius = particle_isotropic_radius / initial_X_r
+
+    particle_mass = jnp.ones((total_particles,))
+    particle_ur = jnp.zeros((total_particles,))
+    particle_phi = jnp.zeros((total_particles,))
+    particle_uphi = jnp.zeros((total_particles,))
+
+    particles = particle_species(
+        name="oppenheimer_snyder_dust",
+        charge=0.0,
+        mass=particle_mass,
+        weight=jnp.asarray(particle_weight),
+        r=jnp.asarray(particle_solver_radius),
+        ur=particle_ur,
+        phi=particle_phi,
+        uphi=particle_uphi,
+        shape_mode=shape_mode,
+    )
+
+    return particles, particle_areal_radius, total_rest_mass
+
+
 SHAPE_FACTOR = 0
 # particle shape factor
-FREE_FALL_FRACTION = 0.1
+FREE_FALL_FRACTION = 0.05
 # fraction of free fall time step to use for the simulation
 CROSSING_FRACTION = 0.25
 # fraction of one radial cell that particles may cross in one time step
@@ -52,12 +275,12 @@ MINIMUM_TRIAL_TIME_STEP = 1.0e-6
 SAVE_EVERY = 1
 # save every completed step by default for compatibility
 
-total_star_mass = 1.0
+total_star_mass = 0.5
 run_time        = 50.0 / total_star_mass # 50 units of M
 surface_areal_radius = 10.0
 number_density = total_star_mass / (4/3 * jnp.pi * surface_areal_radius**3)
 # define the mass of the ball of dust and the outer radius of the ball of dust
-ppc = 50
+ppc = 80
 # define the number of particles per cell
 Nr    = 500
 r_max = 20.0
@@ -66,26 +289,6 @@ Nr_particles = int( surface_areal_radius / dr )
 # define the number of grid points within the sphere and the maximum radius of the grid
 total_particles = Nr_particles * ppc
 # define the total number of particles in the simulation
-surface_range = jnp.linspace(0.0, surface_areal_radius, Nr_particles)
-# define the radial grid within the sphere of dust
-shell_volumes = 4/3 * jnp.pi * (surface_range**3)
-shell_volumes = jnp.diff(jnp.concatenate([jnp.array([0.0]), shell_volumes]))
-# define the volume of each shell in the radial grid
-# each shell volume will have ppc particles.
-per_particle_volume = shell_volumes / ppc
-# define the partition of volume of each particle based on the shell volume and the number of particles per cell
-particle_volume = jnp.repeat(per_particle_volume, ppc)
-# define the volume of each particle by repeating the per particle volume for each particle per cell
-particle_mass = jnp.ones((total_particles,))
-# define a uniform mass for each micro-particle
-particle_weight = particle_volume * number_density
-# define the weight of each macro-particle based on the particle volume and the number density
-particle_solver_radius = jnp.repeat(surface_range, ppc)
-# define the solver radius for each particle by repeating the surface range for each particle per cell
-particle_ur = jnp.zeros((total_particles,))
-particle_phi = jnp.zeros((total_particles,))
-particle_uphi = jnp.zeros((total_particles,))
-# define the particle velocities and positions
 
 if SHAPE_FACTOR == 0:
     shape_mode = "nearest"
@@ -94,16 +297,23 @@ elif SHAPE_FACTOR == 1:
 else:
     shape_mode = "quadratic"
 
-particles = particle_species(
-    name="oppenheimer_snyder_dust",
-    charge=0.0,
-    mass=jnp.asarray(particle_mass),
-    weight=particle_weight,
-    r=jnp.asarray(particle_solver_radius),
-    ur=particle_ur,
-    phi=particle_phi,
-    uphi=particle_uphi,
-    shape_mode=shape_mode,
+initial_X_r = initial_solver_coordinate_scale(
+    total_star_mass,
+    surface_areal_radius,
+)
+solver_r_max = r_max / initial_X_r
+grid = build_radial_grid(solver_r_max, Nr)
+
+particles, particle_areal_radius, total_rest_mass = (
+    initialize_oppenheimer_snyder_particles(
+        grid,
+        initial_X_r,
+        number_density,
+        total_star_mass,
+        surface_areal_radius,
+        total_particles,
+        shape_mode,
+    )
 )
 
 # define the initial particle species
@@ -112,9 +322,6 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--save-every", type=int, default=SAVE_EVERY)
 args = parser.parse_args()
 save_every = max(1, args.save_every)
-
-grid = build_radial_grid( r_max, Nr )
-# define the radial grid
 
 output_directory = (
     Path(__file__).resolve().parent
