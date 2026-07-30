@@ -43,8 +43,12 @@ step_rk4_with_metric = jax.jit(step_rk4_with_metric)
 
 SHAPE_FACTOR = 0
 # particle shape factor
-FREE_FALL_FRACTION = 0.005
+FREE_FALL_FRACTION = 0.1
 # fraction of free fall time step to use for the simulation
+CROSSING_FRACTION = 0.25
+# fraction of one radial cell that particles may cross in one time step
+MINIMUM_TRIAL_TIME_STEP = 1.0e-6
+# stop when no finite positive-lapse trial can be found above this time step
 SAVE_EVERY = 1
 # save every completed step by default for compatibility
 
@@ -139,6 +143,59 @@ def freefall_collapse_time_step(
     return FREE_FALL_FRACTION * math.sqrt(3.0 * math.pi / (32.0 * rho_max))
 
 
+def particle_crossing_time_step(
+    particles,
+    U_state,
+    dr,
+):
+    dr_dt, _ = compute_geodesic_terms(particles, U_state)
+    maximum_speed = float(np.max(np.abs(np.asarray(dr_dt))))
+    if maximum_speed == 0.0:
+        return math.inf
+
+    return CROSSING_FRACTION * dr / maximum_speed
+
+
+def copy_particles(particles):
+    return particle_species(
+        name=particles.name,
+        charge=particles.charges,
+        mass=particles.masses,
+        weight=particles.weight,
+        r=jnp.array(particles.r),
+        ur=jnp.array(particles.ur),
+        phi=jnp.array(particles.phi),
+        uphi=jnp.array(particles.uphi),
+        shape_mode=particles.shape_mode,
+    )
+
+
+def solver_state_is_acceptable(U_state):
+    A, phi, alpha, Krr, beta_over_r, Er, source_terms, r_grid = U_state
+    mass_density, charge_density, Srr, Sr = source_terms
+    solver_arrays = (
+        A,
+        phi,
+        alpha,
+        Krr,
+        beta_over_r,
+        Er,
+        mass_density,
+        charge_density,
+        Srr,
+        Sr,
+        r_grid,
+    )
+
+    finite_state = all(
+        np.all(np.isfinite(np.asarray(values)))
+        for values in solver_arrays
+    )
+    minimum_alpha = float(np.min(np.asarray(alpha)))
+
+    return finite_state and minimum_alpha > 0.0
+
+
 def write_schwarzschild_snapshot(
     solver_U_state,
     solver_particles,
@@ -220,21 +277,46 @@ with tqdm(
     unit="t",
 ) as progress_bar:
     while solver_time < run_time:
-        dt = freefall_collapse_time_step(solver_U_state)
-        step_dt = min(dt, run_time - solver_time)
-        # update the time step based on the free fall time step of the system and the remaining time to run
-        previous_solver_time = solver_time
-        previous_X_t = float(X_t)
-
-        particles, solver_U_state = step_rk4_with_metric(
+        freefall_dt = freefall_collapse_time_step(solver_U_state)
+        crossing_dt = particle_crossing_time_step(
             particles,
             solver_U_state,
-            grid.r_full,
             grid.dr,
-            step_dt,
         )
+        trial_dt = min(freefall_dt, crossing_dt, run_time - solver_time)
+        # limit the trial by collapse, particle crossing, and the remaining run time
 
-        solver_time += step_dt
+        accepted = False
+        while trial_dt >= MINIMUM_TRIAL_TIME_STEP:
+            trial_particles = copy_particles(particles)
+            trial_particles, trial_U_state = step_rk4_with_metric(
+                trial_particles,
+                solver_U_state,
+                grid.r_full,
+                grid.dr,
+                trial_dt,
+            )
+
+            if solver_state_is_acceptable(trial_U_state):
+                accepted = True
+                break
+
+            trial_dt *= 0.5
+
+        if not accepted:
+            print(
+                "No finite positive-lapse trial state found above "
+                f"dt={MINIMUM_TRIAL_TIME_STEP:.3e}; preserving the last "
+                f"accepted state at step {step}, solver time {solver_time:.3e}, "
+                f"schwarzschild time {schwarzschild_time:.3e}."
+            )
+            break
+
+        previous_solver_time = solver_time
+        previous_X_t = float(X_t)
+        particles = trial_particles
+        solver_U_state = trial_U_state
+        solver_time += trial_dt
         step += 1
         _, X_t = schwarzschild_rescale_factors(
             solver_U_state,
@@ -242,15 +324,11 @@ with tqdm(
         )
         schwarzschild_time += 0.5 * (
             previous_X_t + float(X_t)
-        ) * step_dt
+        ) * trial_dt
 
-        apparent_horizon_value = apparent_horizon(solver_U_state)
-        # check for the formation of an apparent horizon
-        horizon_formed = np.any(apparent_horizon_value < 0.0)
         should_save = (
             step % save_every == 0
             or solver_time >= run_time
-            or horizon_formed
         )
         if should_save:
             write_schwarzschild_snapshot(
@@ -261,34 +339,12 @@ with tqdm(
                 schwarzschild_time,
             )
 
-        if horizon_formed:
-            print(
-                f"Apparent horizon formed at step {step}, Polar slicing does not have trapped surfaces, thus simulation will stop. "
-                f"solver time {solver_time:.3e}, "
-                f"schwarzschild time {schwarzschild_time:.3e}."
-            )
-            break
-
         minimum_alpha = float(
             np.min(np.asarray(solver_U_state[2]))
         )
         progress_bar.update(solver_time - previous_solver_time)
         progress_bar.set_postfix(
             step=step,
+            dt=f"{trial_dt:.3e}",
             min_alpha=f"{minimum_alpha:.3e}",
         )
-
-        # Save the completed step before stopping on a strictly negative lapse.
-        if minimum_alpha < 0.0:
-            print(
-                f"Minimum lapse is negative ({minimum_alpha:.3e}) at step {step}, "
-                "stopping simulation."
-            )
-            break
-
-        if minimum_alpha == np.nan:
-            print(
-                f"Minimum lapse is NaN at step {step}, "
-                "stopping simulation."
-            )
-            break
