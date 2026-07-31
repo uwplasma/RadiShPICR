@@ -230,7 +230,15 @@ def heuns_method(U_state, dr, particles, grid, particle_stencil=None):
     )
 
 
-def calculate_metric(particles, r_grid, dr):
+def calculate_metric(
+    particles,
+    r_grid,
+    dr,
+    center_A=1.0,
+    center_alpha=1.0,
+):
+    """Integrate the radial constraints from supplied center metric data."""
+
     r_grid = jnp.asarray(r_grid)
     dr = jnp.asarray(dr, dtype=r_grid.dtype)
     grid = RadialGrid(
@@ -246,9 +254,9 @@ def calculate_metric(particles, r_grid, dr):
         shape_mode=particles.get_shape(),
     )
 
-    initial_A = jnp.asarray(1.0, dtype=r_grid.dtype)
+    initial_A = jnp.asarray(center_A, dtype=r_grid.dtype)
     initial_phi = jnp.asarray(0.0, dtype=r_grid.dtype)
-    initial_alpha = jnp.asarray(1.0, dtype=r_grid.dtype)
+    initial_alpha = jnp.asarray(center_alpha, dtype=r_grid.dtype)
     initial_Krr = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_beta_over_r = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_Er = jnp.asarray(0.0, dtype=r_grid.dtype)
