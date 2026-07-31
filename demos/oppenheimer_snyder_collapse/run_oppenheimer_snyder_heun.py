@@ -34,7 +34,6 @@ from RadiShPICR.ConstraintBasedRelativity import (
     schwarzschild_rescale_factors,
     step_rk4_with_metric,
 )
-from RadiShPICR.ConstraintBasedRelativity.geodesic import compute_geodesic_terms
 from RadiShPICR.diagnostics import write_phase_space
 from RadiShPICR.particles import particle_species
 
@@ -268,8 +267,6 @@ SHAPE_FACTOR = 0
 # particle shape factor
 FREE_FALL_FRACTION = 0.05
 # fraction of free fall time step to use for the simulation
-CROSSING_FRACTION = 0.25
-# fraction of one radial cell that particles may cross in one time step
 MINIMUM_TRIAL_TIME_STEP = 1.0e-6
 # stop when no finite positive Schwarzschild-lapse trial remains above this step
 SAVE_EVERY = 1
@@ -355,19 +352,6 @@ def freefall_collapse_time_step(
     # unpack the metric state into its components
     rho_max = float(np.max(np.asarray(mass_density)))
     return FREE_FALL_FRACTION * math.sqrt(3.0 * math.pi / (32.0 * rho_max))
-
-
-def particle_crossing_time_step(
-    particles,
-    U_state,
-    dr,
-):
-    dr_dt, _ = compute_geodesic_terms(particles, U_state)
-    maximum_speed = float(np.max(np.abs(np.asarray(dr_dt))))
-    if maximum_speed == 0.0:
-        return math.inf
-
-    return CROSSING_FRACTION * dr / maximum_speed
 
 
 def copy_particles(particles):
@@ -500,17 +484,11 @@ with tqdm(
         > schwarzschild_time_tolerance
     ):
         freefall_dt = freefall_collapse_time_step(solver_U_state)
-        crossing_dt = particle_crossing_time_step(
-            particles,
-            solver_U_state,
-            grid.dr,
-        )
         remaining_schwarzschild_time = (
             target_schwarzschild_time - schwarzschild_time
         )
         trial_dt = min(
             freefall_dt,
-            crossing_dt,
             remaining_schwarzschild_time / float(X_t),
         )
         # The RK4 step remains in solver time. The last step is shortened using
