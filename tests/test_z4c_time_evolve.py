@@ -330,12 +330,12 @@ def test_particles_rk4_step_updates_source_backed_particle_class(monkeypatch):
     dt = 0.1
 
     def fake_compute_geodesic_terms(stage_particles, stage_metric):
-        dvr_dt = jnp.ones_like(stage_particles.ur)
-        duphi_dt = jnp.full_like(stage_particles.uphi, 10.0)
-        drdt = jnp.full_like(stage_particles.r, 2.0)
-        dphidt = -jnp.ones_like(stage_particles.phi)
+        du_r_dt = jnp.ones_like(stage_particles.ur)
+        du_phi_dt = jnp.full_like(stage_particles.uphi, 10.0)
+        dr_dt = jnp.full_like(stage_particles.r, 2.0)
+        dphi_dt = -jnp.ones_like(stage_particles.phi)
 
-        return dvr_dt, duphi_dt, drdt, dphidt
+        return du_r_dt, du_phi_dt, dr_dt, dphi_dt
 
     def fake_compute_radial_matter_terms(stage_particles, stage_metric):
         return MatterTerms(
@@ -380,12 +380,12 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
 
     def fake_compute_geodesic_terms(stage_particles, stage_metric):
         stage_number = len(matter_stage_positions) + 1.0
-        dvr_dt = jnp.full_like(stage_particles.ur, stage_number)
-        duphi_dt = jnp.zeros_like(stage_particles.uphi)
-        drdt = jnp.full_like(stage_particles.r, stage_number)
-        dphidt = jnp.zeros_like(stage_particles.phi)
+        du_r_dt = jnp.full_like(stage_particles.ur, stage_number)
+        du_phi_dt = jnp.zeros_like(stage_particles.uphi)
+        dr_dt = jnp.full_like(stage_particles.r, stage_number)
+        dphi_dt = jnp.zeros_like(stage_particles.phi)
 
-        return dvr_dt, duphi_dt, drdt, dphidt
+        return du_r_dt, du_phi_dt, dr_dt, dphi_dt
 
     def fake_compute_radial_matter_terms(stage_particles, stage_metric):
         matter_stage_positions.append(stage_particles.r.copy())
@@ -420,3 +420,71 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
         jnp.asarray(derivative_stage_rho),
         jnp.asarray([r0[0], r0[0] + 0.5 * dt, r0[0] + dt, r0[0] + 3.0 * dt]),
     )
+
+
+def test_flat_space_particle_trajectory_has_fourth_order_self_convergence():
+    from RadiShPICR.Z4C.time_evolve import particles_rk4_step
+
+    grid_r = jnp.arange(0.5, 20.5, 0.5)
+    initial_r = 5.0
+    initial_phi = 0.3
+    initial_ur = 0.2
+    initial_uphi = 1.1
+    final_time = 0.8
+
+    momentum_x = (
+        initial_ur * jnp.cos(initial_phi)
+        - initial_uphi * jnp.sin(initial_phi) / initial_r
+    )
+    momentum_y = (
+        initial_ur * jnp.sin(initial_phi)
+        + initial_uphi * jnp.cos(initial_phi) / initial_r
+    )
+    lorentz_factor = jnp.sqrt(1.0 + momentum_x**2 + momentum_y**2)
+    exact_x = (
+        initial_r * jnp.cos(initial_phi)
+        + final_time * momentum_x / lorentz_factor
+    )
+    exact_y = (
+        initial_r * jnp.sin(initial_phi)
+        + final_time * momentum_y / lorentz_factor
+    )
+    exact_r = jnp.sqrt(exact_x**2 + exact_y**2)
+    exact_phi = jnp.arctan2(exact_y, exact_x)
+    exact_ur = (
+        momentum_x * jnp.cos(exact_phi)
+        + momentum_y * jnp.sin(exact_phi)
+    )
+    exact_uphi = exact_r * (
+        -momentum_x * jnp.sin(exact_phi)
+        + momentum_y * jnp.cos(exact_phi)
+    )
+
+    def trajectory_error(dt, num_steps):
+        metric = _flat_metric(grid_r)
+        particles = particle_species(
+            name="test",
+            charge=0.0,
+            mass=0.0,
+            weight=1.0,
+            r=jnp.asarray([initial_r]),
+            ur=jnp.asarray([initial_ur]),
+            phi=jnp.asarray([initial_phi]),
+            uphi=jnp.asarray([initial_uphi]),
+            shape_mode="nearest",
+        )
+
+        for _ in range(num_steps):
+            particles, metric = particles_rk4_step(particles, metric, dt)
+
+        return jnp.sqrt(
+            (particles.r[0] - exact_r) ** 2
+            + (exact_r * (particles.phi[0] - exact_phi)) ** 2
+            + (particles.ur[0] - exact_ur) ** 2
+            + (particles.uphi[0] - exact_uphi) ** 2
+        )
+
+    coarse_error = trajectory_error(dt=0.2, num_steps=4)
+    fine_error = trajectory_error(dt=0.1, num_steps=8)
+
+    assert coarse_error / fine_error > 10.0
