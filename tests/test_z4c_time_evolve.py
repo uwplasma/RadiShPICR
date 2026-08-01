@@ -321,7 +321,7 @@ def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
     _assert_algebraic_constraints(updated_metric)
 
 
-def test_particles_rk4_step_updates_source_backed_particle_class(monkeypatch):
+def test_particles_rk4_step_updates_particles_and_reflects_origin(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     r = jnp.linspace(0.1, 1.0, 8)
@@ -332,7 +332,7 @@ def test_particles_rk4_step_updates_source_backed_particle_class(monkeypatch):
     def fake_compute_geodesic_terms(stage_particles, stage_metric):
         du_r_dt = jnp.ones_like(stage_particles.ur)
         du_phi_dt = jnp.full_like(stage_particles.uphi, 10.0)
-        dr_dt = jnp.full_like(stage_particles.r, 2.0)
+        dr_dt = jnp.asarray([-4.0, 2.0])
         dphi_dt = -jnp.ones_like(stage_particles.phi)
 
         return du_r_dt, du_phi_dt, dr_dt, dphi_dt
@@ -360,10 +360,20 @@ def test_particles_rk4_step_updates_source_backed_particle_class(monkeypatch):
 
     updated_particles, updated_metric = time_evolve.particles_rk4_step(particles, metric, dt)
 
+    expected_r = r0 + dt * jnp.asarray([-4.0, 2.0])
+    crossed_origin = expected_r < 0.0
+    expected_ur = ur0 + dt
+
     assert updated_particles is particles
-    assert jnp.allclose(updated_particles.r, r0 + 2.0 * dt)
+    assert jnp.allclose(
+        updated_particles.r,
+        jnp.where(crossed_origin, -expected_r, expected_r),
+    )
     assert jnp.allclose(updated_particles.phi, phi0 - dt)
-    assert jnp.allclose(updated_particles.ur, ur0 + dt)
+    assert jnp.allclose(
+        updated_particles.ur,
+        jnp.where(crossed_origin, -expected_ur, expected_ur),
+    )
     assert jnp.allclose(updated_particles.uphi, uphi0 + 10.0 * dt)
     assert jnp.allclose(updated_metric.alpha, metric.alpha + dt)
 

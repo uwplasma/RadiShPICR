@@ -283,4 +283,9 @@ def particles_rk4_step(particles, metric: Z4C_Metric, dt):
     )
     # Update positions and physical covariant momenta with the RK4 weights.
 
+    crossed_origin = particles.r < 0.0
+    particles.r = jnp.where(crossed_origin, -particles.r, particles.r)
+    particles.ur = jnp.where(crossed_origin, -particles.ur, particles.ur)
+    # Reflect center-crossing particles after the completed RK4 update.
+
     return particles, final_metric
