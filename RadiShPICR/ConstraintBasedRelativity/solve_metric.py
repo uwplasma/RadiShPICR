@@ -1,8 +1,12 @@
+import jax
 import jax.numpy as jnp
 from jax import lax
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import (
+    angular_lorentz_term,
+    radial_shell_volume,
+)
 from RadiShPICR.particles.particle_shapes import radial_shape_stencil
 
 
@@ -17,12 +21,32 @@ def dr_sqrt_phi(U_state, dr=None):
     # Er is the covariant radial field, so E_i E^i = Er^2 / A^2.
     mass_energy_density = rho + 0.5 * Er**2 / A**2
 
-    interior_term = -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * mass_energy_density - 2.0 * phi / r
-    center_term = (
-        -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * mass_energy_density / 3.0
+    A, phi, mass_energy_density, r = jnp.broadcast_arrays(
+        A,
+        phi,
+        mass_energy_density,
+        r,
+    )
+    output_shape = r.shape
+
+    def derivative_at_point(A_point, phi_point, rho_point, r_point):
+        return lax.cond(
+            r_point == 0.0,
+            lambda: -2.0 * jnp.pi * jnp.sqrt(A_point) ** 5 * rho_point / 3.0,
+            lambda: (
+                -2.0 * jnp.pi * jnp.sqrt(A_point) ** 5 * rho_point
+                - 2.0 * phi_point / r_point
+            ),
+        )
+
+    derivative = jax.vmap(derivative_at_point)(
+        A.reshape(-1),
+        phi.reshape(-1),
+        mass_energy_density.reshape(-1),
+        r.reshape(-1),
     )
 
-    return jnp.where(r == 0.0, center_term, interior_term)
+    return derivative.reshape(output_shape)
 
 
 def dr_alpha(U_state, dr=None):
@@ -52,15 +76,37 @@ def Krr_from_state(U_state):
 
 def dr_beta_over_r(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
+    Krr = Krr_from_state(U_state)
+    alpha, Krr, r = jnp.broadcast_arrays(alpha, Krr, r)
+    output_shape = r.shape
 
-    return jnp.where(r == 0.0, 0.0, alpha * Krr_from_state(U_state) / r)
+    def derivative_at_point(alpha_point, Krr_point, r_point):
+        return lax.cond(
+            r_point == 0.0,
+            lambda: jnp.zeros_like(r_point),
+            lambda: alpha_point * Krr_point / r_point,
+        )
+
+    derivative = jax.vmap(derivative_at_point)(
+        alpha.reshape(-1),
+        Krr.reshape(-1),
+        r.reshape(-1),
+    )
+
+    return derivative.reshape(output_shape)
 
 
 def beta_over_r_from_integral(alpha, Krr, r, dr):
     """Shift condition solved as a tail integral after the radial Heun solve."""
 
-    safe_r = jnp.where(r == 0.0, 1.0, r)
-    integrand = jnp.where(r == 0.0, 0.0, alpha * Krr / safe_r)
+    def integrand_at_point(alpha_point, Krr_point, r_point):
+        return lax.cond(
+            r_point == 0.0,
+            lambda: jnp.zeros_like(r_point),
+            lambda: alpha_point * Krr_point / r_point,
+        )
+
+    integrand = jax.vmap(integrand_at_point)(alpha, Krr, r)
 
     trapezoid_segments = 0.5 * (integrand[:-1] + integrand[1:]) * (r[1:] - r[:-1])
     tail_integral = jnp.concatenate(
@@ -77,14 +123,35 @@ def dr_Er(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
 
-    interior_term = (
-        A**2 * charge_density
-        - 2.0 * Er / r
-        - 2.0 * phi * Er / jnp.sqrt(A)
+    A, phi, Er, charge_density, r = jnp.broadcast_arrays(
+        A,
+        phi,
+        Er,
+        charge_density,
+        r,
     )
-    center_term = A**2 * charge_density / 3.0
+    output_shape = r.shape
 
-    return jnp.where(r == 0.0, center_term, interior_term)
+    def derivative_at_point(A_point, phi_point, Er_point, charge_point, r_point):
+        return lax.cond(
+            r_point == 0.0,
+            lambda: A_point**2 * charge_point / 3.0,
+            lambda: (
+                A_point**2 * charge_point
+                - 2.0 * Er_point / r_point
+                - 2.0 * phi_point * Er_point / jnp.sqrt(A_point)
+            ),
+        )
+
+    derivative = jax.vmap(derivative_at_point)(
+        A.reshape(-1),
+        phi.reshape(-1),
+        Er.reshape(-1),
+        charge_density.reshape(-1),
+        r.reshape(-1),
+    )
+
+    return derivative.reshape(output_shape)
 
 
 def _source_terms_at_point(
@@ -100,19 +167,34 @@ def _source_terms_at_point(
     # get the particle positions and velocities
 
     if particle_stencil is None:
-        particle_stencil = radial_shape_stencil(
-            r_particle,
-            grid,
-            shape_mode=particles.get_shape(),
+        particle_stencil = (
+            radial_shape_stencil(
+                r_particle,
+                grid,
+                shape_mode=particles.get_shape(),
+                parity=1,
+            ),
+            radial_shape_stencil(
+                r_particle,
+                grid,
+                shape_mode=particles.get_shape(),
+                parity=-1,
+            ),
         )
 
-    indices, stencil_weights = particle_stencil
+    (even_indices, even_stencil_weights), (odd_indices, odd_stencil_weights) = (
+        particle_stencil
+    )
     floating_index = (radial_coordinate - grid.r_full[0]) / dr
-    grid_index = jnp.rint(floating_index).astype(indices.dtype)
+    grid_index = jnp.rint(floating_index).astype(even_indices.dtype)
     # get the weights for the particles that contribute to this grid point
 
-    weights = jnp.sum(
-        jnp.where(indices == grid_index, stencil_weights, 0.0),
+    even_weights = jnp.sum(
+        jnp.where(even_indices == grid_index, even_stencil_weights, 0.0),
+        axis=0,
+    )
+    odd_weights = jnp.sum(
+        jnp.where(odd_indices == grid_index, odd_stencil_weights, 0.0),
         axis=0,
     )
 
@@ -120,7 +202,7 @@ def _source_terms_at_point(
     lorentz_factor = jnp.sqrt(
         1.0
         + ur**2 / A_at_point**2
-        + uphi**2 / (A_at_point**2 * radial_coordinate**2)
+        + angular_lorentz_term(uphi, A_at_point, radial_coordinate)
     )
     # The Lorentz factor is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
 
@@ -131,11 +213,11 @@ def _source_terms_at_point(
     )
     # the volume of the cell is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
 
-    weighted_mass = particles.get_mass() * weights
+    weighted_mass = particles.get_mass() * even_weights
     conformal_mass_density = jnp.sum(weighted_mass * lorentz_factor)
-    conformal_charge_density = jnp.sum(particles.get_charge() * weights)
+    conformal_charge_density = jnp.sum(particles.get_charge() * even_weights)
     conformal_Srr = jnp.sum(weighted_mass * ur**2 / lorentz_factor)
-    conformal_Sr = jnp.sum(weighted_mass * ur)
+    conformal_Sr = jnp.sum(particles.get_mass() * odd_weights * ur)
     # compute the mass density, charge density, and stress-energy tensor components in the conformal frame
     mass_density = conformal_mass_density / cell_volume
     charge_density = conformal_charge_density / cell_volume
@@ -228,14 +310,23 @@ def calculate_metric(particles, r_grid, dr):
     grid = RadialGrid(
         r_full=r_grid,
         r_interior=r_grid[1:-1],
-        # The physical endpoint nodes remain reserved for vacuum boundary data.
+        # The origin is parity-filled; only the outer endpoint remains vacuum.
         dr=dr,
         r_max=r_grid[-1],
     )
-    particle_stencil = radial_shape_stencil(
-        particles.r,
-        grid,
-        shape_mode=particles.get_shape(),
+    particle_stencil = (
+        radial_shape_stencil(
+            particles.r,
+            grid,
+            shape_mode=particles.get_shape(),
+            parity=1,
+        ),
+        radial_shape_stencil(
+            particles.r,
+            grid,
+            shape_mode=particles.get_shape(),
+            parity=-1,
+        ),
     )
 
     initial_A = jnp.asarray(1.0, dtype=r_grid.dtype)

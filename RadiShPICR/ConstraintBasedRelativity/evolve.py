@@ -1,8 +1,24 @@
+import jax
 import jax.numpy as jnp
+from jax import lax
 
 from RadiShPICR.ConstraintBasedRelativity.geodesic import compute_geodesic_terms
 from RadiShPICR.ConstraintBasedRelativity.lorentz_force import compute_lorentz_terms
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import calculate_metric
+
+
+def _azimuthal_derivative(uphi, r):
+    """Return dphi/dt without evaluating 0 / 0 at the origin."""
+
+    def azimuthal_derivative_at_particle(uphi_particle, r_particle):
+        return lax.cond(
+            uphi_particle == 0.0,
+            lambda: jnp.zeros_like(uphi_particle),
+            lambda: uphi_particle / r_particle,
+        )
+
+    return jax.vmap(azimuthal_derivative_at_particle)(uphi, r)
+
 
 def step(particles, r_grid, dr, dt):
     dr_dt, dphi_dt, dur_dt = _particle_derivatives(particles, r_grid, dr)
@@ -44,7 +60,7 @@ def _particle_derivatives(particles, r_grid, dr, U_state=None):
 
     r, _ = particles.get_positions()
     _, uphi = particles.get_velocities()
-    dphi_dt = uphi / (r)
+    dphi_dt = _azimuthal_derivative(uphi, r)
     dur_dt = dur_dt_GR + dur_dt_EM
 
     return dr_dt, dphi_dt, dur_dt

@@ -1,8 +1,11 @@
+import jax
 import jax.numpy as jnp
+from jax import lax
 
 from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import dr_A, dr_alpha, dr_beta_over_r
+from RadiShPICR.ConstraintBasedRelativity.utils import angular_lorentz_term
 
 
 def _field_interpolation_grid(r_grid):
@@ -12,6 +15,41 @@ def _field_interpolation_grid(r_grid):
         r_interior=r_grid,
         dr=dr_grid,
         r_max=r_grid[-1],
+    )
+
+
+def _angular_radial_force(
+    uphi,
+    r,
+    A,
+    lapse,
+    dA_dr,
+    lorentz_factor,
+):
+    """Return the angular radial force without evaluating it when uphi is zero."""
+
+    def angular_force_at_particle(uphi_p, r_p, A_p, alpha_p, dA_dr_p, W_p):
+        return lax.cond(
+            uphi_p == 0.0,
+            lambda: jnp.zeros_like(uphi_p),
+            lambda: (
+                alpha_p
+                * uphi_p**2
+                / W_p
+                * (
+                    1.0 / (r_p**3 * A_p**2)
+                    + dA_dr_p / (r_p**2 * A_p**3)
+                )
+            ),
+        )
+
+    return jax.vmap(angular_force_at_particle)(
+        uphi,
+        r,
+        A,
+        lapse,
+        dA_dr,
+        lorentz_factor,
     )
 
 
@@ -59,13 +97,14 @@ def compute_geodesic_terms(particles, U_state):
         r,
         interpolation_grid,
         shape_mode=shape_mode,
+        field_parities=jnp.asarray((1, 1, -1, -1, -1, 1)),
     )
 
 
     W = jnp.sqrt(
         1.0
         + ur**2 / A_at_particle**2
-        + uphi**2 / (r**2 * A_at_particle**2)
+        + angular_lorentz_term(uphi, A_at_particle, r)
     )
 
     dr_dt = lapse_at_particle * ur / (A_at_particle**2 * W) - shift_at_particle
@@ -74,14 +113,13 @@ def compute_geodesic_terms(particles, U_state):
     du_r_dt = du_r_dt + (
         lapse_at_particle * ur**2 * dA_dr_at_particle / (A_at_particle**3 * W)
     )
-    du_r_dt = du_r_dt + (
-        lapse_at_particle
-        * uphi**2
-        / W
-        * (
-            1.0 / (r**3 * A_at_particle**2)
-            + dA_dr_at_particle / (r**2 * A_at_particle**3)
-        )
+    du_r_dt = du_r_dt + _angular_radial_force(
+        uphi,
+        r,
+        A_at_particle,
+        lapse_at_particle,
+        dA_dr_at_particle,
+        W,
     )
 
     return dr_dt, du_r_dt

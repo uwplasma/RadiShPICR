@@ -21,7 +21,7 @@ from RadiShPICR.ConstraintBasedRelativity.solve_metric import (
     dr_Er,
     dr_sqrt_phi,
 )
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value
+from RadiShPICR.ConstraintBasedRelativity.utils import angular_lorentz_term
 from RadiShPICR.particles import particle_species
 
 
@@ -140,16 +140,6 @@ def test_particle_species_supports_explicit_lower_and_compile():
     assert jnp.allclose(mass, jnp.asarray([1.0, 3.0]))
 
 
-def test_pad_value_adds_small_denominator_offset_with_input_dtype():
-    values = jnp.asarray([0.0, 2.0], dtype=jnp.float32)
-
-    padded = pad_value(values)
-
-    assert padded.dtype == values.dtype
-    assert padded[0] == jnp.asarray(1.0e-15, dtype=values.dtype)
-    assert padded[1] == values[1] + jnp.asarray(1.0e-15, dtype=values.dtype)
-
-
 def test_calculate_metric_returns_grid_level_ustate_for_zero_source():
     particles = make_species(charge=0.0, mass=0.0)
     r_grid = jnp.linspace(0.0, 1.0, 5)
@@ -246,27 +236,26 @@ def test_electromagnetic_sources_use_covariant_radial_field():
     source_terms = (rho, charge_density, particle_Srr, zeros)
     U_state = (A, phi, alpha, zeros, zeros, Er, source_terms, r)
 
-    A_for_denominators = pad_value(A)
-    total_rho = rho + 0.5 * Er**2 / A_for_denominators**2
+    total_rho = rho + 0.5 * Er**2 / A**2
     expected_dphi_dr = (
         -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * total_rho
         - 2.0 * phi / r
     )
 
-    total_Srr = particle_Srr - 0.5 * Er**2
+    total_Srr = particle_Srr - 0.5 * Er**2 / A**2
     expected_dalpha_dr = (
         4.0 * jnp.pi * alpha * total_Srr * r * A
         - 2.0 * alpha * phi * jnp.sqrt(A)
         - 2.0 * alpha * phi**2 * r
     ) / (
-        A_for_denominators
-        * (1.0 + 2.0 * r * phi / jnp.sqrt(A_for_denominators))
+        A
+        * (1.0 + 2.0 * r * phi / jnp.sqrt(A))
     )
 
     expected_dEr_dr = (
         A**2 * charge_density
         - 2.0 * Er / r
-        - 2.0 * phi * Er / jnp.sqrt(A_for_denominators)
+        - 2.0 * phi * Er / jnp.sqrt(A)
     )
 
     assert jnp.allclose(dr_sqrt_phi(U_state, dr), expected_dphi_dr)
@@ -469,7 +458,7 @@ def test_particle_derivatives_use_raw_particle_and_metric_coordinates(monkeypatc
     assert jnp.allclose(particles.ur, original_ur)
 
 
-def test_source_terms_pad_zero_A_denominators():
+def test_source_terms_keep_zero_A_singularity_visible():
     particles = particle_species(
         name="test",
         charge=1.0,
@@ -495,8 +484,74 @@ def test_source_terms_pad_zero_A_denominators():
         ]
     )
 
-    assert jnp.all(jnp.isfinite(source_terms))
-    assert jnp.allclose(source_terms, 0.0)
+    assert not jnp.all(jnp.isfinite(source_terms))
+
+
+def test_zero_uphi_skips_singular_angular_lorentz_term_at_origin():
+    uphi = jnp.zeros(3)
+    radial_coordinate = jnp.zeros(3)
+
+    eager = angular_lorentz_term(uphi, 1.0, radial_coordinate)
+    compiled = jax.jit(angular_lorentz_term)(uphi, 1.0, radial_coordinate)
+
+    assert jnp.all(jnp.isfinite(eager))
+    assert jnp.allclose(eager, 0.0)
+    assert jnp.allclose(compiled, eager)
+
+
+def test_nonzero_uphi_keeps_origin_singularity_visible():
+    angular_term = angular_lorentz_term(
+        jnp.asarray([1.0]),
+        jnp.asarray([1.0]),
+        jnp.asarray([0.0]),
+    )
+
+    assert not jnp.all(jnp.isfinite(angular_term))
+
+
+def test_zero_uphi_particle_dynamics_are_finite_and_zero_at_origin():
+    r_grid = jnp.linspace(0.0, 1.0, 5)
+    zeros = jnp.zeros_like(r_grid)
+    ones = jnp.ones_like(r_grid)
+    U_state = (
+        ones,
+        zeros,
+        ones,
+        zeros,
+        zeros,
+        zeros,
+        (zeros, zeros, zeros, zeros),
+        r_grid,
+    )
+    particles = particle_species(
+        name="center",
+        charge=0.0,
+        mass=1.0,
+        weight=1.0,
+        r=jnp.asarray([0.0]),
+        ur=jnp.asarray([0.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="quadratic",
+    )
+
+    eager = constraint_evolve._particle_derivatives(
+        particles,
+        r_grid,
+        r_grid[1] - r_grid[0],
+        U_state=U_state,
+    )
+    compiled = jax.jit(constraint_evolve._particle_derivatives)(
+        particles,
+        r_grid,
+        r_grid[1] - r_grid[0],
+        U_state=U_state,
+    )
+
+    for eager_derivative, compiled_derivative in zip(eager, compiled):
+        assert jnp.all(jnp.isfinite(eager_derivative))
+        assert jnp.allclose(eager_derivative, 0.0)
+        assert jnp.allclose(compiled_derivative, eager_derivative)
 
 
 def test_lorentz_force_uses_particle_shape_interpolation_for_fields():
@@ -603,7 +658,7 @@ def test_geodesic_terms_use_particle_shape_interpolation_for_metric_fields():
     assert jnp.allclose(du_r_dt, 0.0)
 
 
-def test_geodesic_terms_pad_zero_A_denominators():
+def test_geodesic_terms_keep_zero_A_singularity_visible():
     particles = particle_species(
         name="test",
         charge=0.0,
@@ -630,8 +685,8 @@ def test_geodesic_terms_pad_zero_A_denominators():
 
     dr_dt, du_r_dt = compute_geodesic_terms(particles, U_state)
 
-    assert jnp.all(jnp.isfinite(dr_dt))
-    assert jnp.all(jnp.isfinite(du_r_dt))
+    assert not jnp.all(jnp.isfinite(dr_dt))
+    assert not jnp.all(jnp.isfinite(du_r_dt))
 
 
 def test_step_updates_current_particle_class_in_place_and_preserves_uphi():
@@ -649,7 +704,7 @@ def test_step_updates_current_particle_class_in_place_and_preserves_uphi():
     assert jnp.allclose(updated.uphi, initial_uphi)
 
 
-def test_step_freezes_particle_that_crosses_center(monkeypatch):
+def test_step_keeps_signed_particle_state_after_center_crossing(monkeypatch):
     def fake_calculate_metric(stage_particles, r_grid, dr):
         return make_metric_result(r_grid)
 
@@ -683,9 +738,9 @@ def test_step_freezes_particle_that_crosses_center(monkeypatch):
     updated = step(particles, r_grid, r_grid[1] - r_grid[0], dt=0.1)
 
     assert updated is particles
-    assert jnp.allclose(updated.r, 0.0)
-    assert jnp.allclose(updated.ur, 0.0)
-    assert jnp.allclose(updated.uphi, 0.0)
+    assert jnp.allclose(updated.r, -0.05)
+    assert jnp.allclose(updated.ur, -1.0)
+    assert jnp.allclose(updated.uphi, 0.4)
 
 
 def test_step_rk4_imports_as_additional_timestep_option():
@@ -885,7 +940,7 @@ def test_step_rk4_recomputes_stage_specific_metric_and_em_field(monkeypatch):
     assert jnp.allclose(metric_stage_positions[3], jnp.asarray([0.55, 1.05]))
 
 
-def test_step_rk4_freezes_center_crossing_before_stage_metric_solves(monkeypatch):
+def test_step_rk4_keeps_signed_center_crossing_in_stage_metric_solves(monkeypatch):
     metric_stage_positions = []
 
     def fake_calculate_metric(stage_particles, r_grid, dr):
@@ -922,13 +977,16 @@ def test_step_rk4_freezes_center_crossing_before_stage_metric_solves(monkeypatch
     step_rk4(particles, r_grid, r_grid[1] - r_grid[0], dt=0.2)
 
     assert len(metric_stage_positions) == 4
-    assert all(jnp.all(stage_r >= 0.0) for stage_r in metric_stage_positions)
-    assert jnp.allclose(particles.r, 0.0)
-    assert jnp.allclose(particles.ur, 0.0)
-    assert jnp.allclose(particles.uphi, 0.0)
+    assert jnp.allclose(
+        jnp.asarray(metric_stage_positions).reshape(-1),
+        jnp.asarray([0.05, -0.05, -0.05, -0.15]),
+    )
+    assert jnp.allclose(particles.r, -0.15)
+    assert jnp.allclose(particles.ur, -1.0)
+    assert jnp.allclose(particles.uphi, 0.2)
 
 
-def test_step_rk4_keeps_center_frozen_against_force_terms(monkeypatch):
+def test_step_rk4_does_not_freeze_zero_uphi_particle_at_center(monkeypatch):
     metric_stage_positions = []
 
     def fake_calculate_metric(stage_particles, r_grid, dr):
@@ -957,7 +1015,7 @@ def test_step_rk4_keeps_center_frozen_against_force_terms(monkeypatch):
         r=jnp.asarray([0.0]),
         ur=jnp.asarray([-1.0]),
         phi=jnp.asarray([0.0]),
-        uphi=jnp.asarray([0.5]),
+        uphi=jnp.asarray([0.0]),
         shape_mode="nearest",
     )
     r_grid = jnp.linspace(0.0, 1.0, 5)
@@ -965,9 +1023,12 @@ def test_step_rk4_keeps_center_frozen_against_force_terms(monkeypatch):
     step_rk4(particles, r_grid, r_grid[1] - r_grid[0], dt=0.1)
 
     assert len(metric_stage_positions) == 4
-    assert all(jnp.allclose(stage_r, 0.0) for stage_r in metric_stage_positions)
-    assert jnp.allclose(particles.r, 0.0)
-    assert jnp.allclose(particles.ur, 0.0)
+    assert jnp.allclose(
+        jnp.asarray(metric_stage_positions).reshape(-1),
+        jnp.asarray([0.0, 0.05, 0.05, 0.1]),
+    )
+    assert jnp.allclose(particles.r, 0.1)
+    assert jnp.allclose(particles.ur, -0.8)
     assert jnp.allclose(particles.uphi, 0.0)
 
 

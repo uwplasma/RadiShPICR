@@ -25,6 +25,7 @@ def compute_lorentz_terms(particles, U_state):
         r,
         interpolation_grid,
         shape_mode=shape_mode,
+        field_parities=jnp.asarray((1, -1)),
     )
 
     return lapse_at_particle * particles.get_charge() * electric_field_at_particle / particles.get_mass()

@@ -134,7 +134,7 @@ def test_quadratic_shape_has_expected_tsc_weights():
 
 def test_grid_aware_pointwise_weights_match_indexed_stencil():
     grid = make_grid()
-    boundary_indices = jnp.asarray([0, grid.r_full.shape[0] - 1])
+    outer_boundary_index = grid.r_full.shape[0] - 1
     radial_positions = jnp.asarray(
         [-0.75, 0.0, 0.25, 0.5, 0.75, 3.25, 7.25, 7.5, 7.75, 8.0, 8.75]
     )
@@ -167,8 +167,74 @@ def test_grid_aware_pointwise_weights_match_indexed_stencil():
         )(grid.r_full)
 
         assert jnp.allclose(pointwise_weights, indexed_weights)
-        assert jnp.allclose(pointwise_weights[boundary_indices], 0.0)
+        assert jnp.allclose(pointwise_weights[outer_boundary_index], 0.0)
         assert jnp.allclose(jnp.sum(pointwise_weights, axis=0), 1.0)
+
+
+def test_origin_stencil_folds_even_and_odd_quadratic_weights_by_parity():
+    grid = make_grid()
+    radial_positions = jnp.asarray([0.0, 0.25, -0.25])
+
+    def assembled_stencil(parity):
+        indices, weights = radial_shape_stencil(
+            radial_positions,
+            grid,
+            shape_mode="quadratic",
+            parity=parity,
+        )
+        particle_columns = jnp.broadcast_to(
+            jnp.arange(radial_positions.shape[0])[jnp.newaxis, :],
+            indices.shape,
+        )
+        assembled = jnp.zeros((grid.r_full.shape[0], radial_positions.shape[0]))
+        return assembled.at[indices, particle_columns].add(weights)
+
+    even_weights = assembled_stencil(parity=1)
+    odd_weights = assembled_stencil(parity=-1)
+
+    assert jnp.allclose(
+        even_weights[:2],
+        jnp.asarray(
+            [
+                [0.75, 0.6875, 0.6875],
+                [0.25, 0.3125, 0.3125],
+            ]
+        ),
+    )
+    assert jnp.allclose(
+        odd_weights[:2],
+        jnp.asarray(
+            [
+                [0.0, 0.0, 0.0],
+                [0.0, 0.25, -0.25],
+            ]
+        ),
+    )
+
+
+def test_origin_parity_interpolation_matches_even_and_odd_fields():
+    grid = make_grid()
+    radial_positions = jnp.asarray([-0.25, 0.0, 0.25])
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        even_values = interpolate_field_to_particles(
+            grid.r_full**2,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            parity=1,
+        )
+        odd_values = interpolate_field_to_particles(
+            grid.r_full,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            parity=-1,
+        )
+
+        assert jnp.allclose(even_values[0], even_values[2])
+        assert jnp.allclose(odd_values[0], -odd_values[2])
+        assert odd_values[1] == 0.0
 
 
 def test_unbounded_compact_stencil_matches_pointwise_shape_weights():
@@ -216,7 +282,7 @@ def test_fused_constraint_sources_match_individual_source_functions():
             r=jnp.asarray([0.25, 3.25, 7.75]),
             ur=jnp.asarray([0.4, -0.2, 0.7]),
             phi=jnp.zeros(3),
-            uphi=jnp.asarray([0.1, 0.3, -0.2]),
+            uphi=jnp.zeros(3),
             shape_mode=shape_mode,
         )
 
@@ -258,9 +324,34 @@ def test_fused_constraint_sources_match_individual_source_functions():
                 assert jnp.allclose(fused_source, expected_source)
 
 
+def test_nonzero_uphi_source_keeps_origin_singularity_visible():
+    grid = make_grid()
+    particles = particle_species(
+        name="angular",
+        charge=0.0,
+        mass=1.0,
+        weight=1.0,
+        r=jnp.asarray([0.25]),
+        ur=jnp.asarray([0.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([1.0]),
+        shape_mode="quadratic",
+    )
+
+    mass_density, _, Srr, _ = _source_terms_at_point(
+        particles,
+        jnp.asarray(1.0),
+        grid.r_full[0],
+        grid,
+    )
+
+    assert not jnp.isfinite(mass_density)
+    assert jnp.isfinite(Srr)
+
+
 def test_boundary_source_deposition_conserves_particle_mass_and_charge():
     grid = make_grid()
-    boundary_indices = jnp.asarray([0, grid.r_full.shape[0] - 1])
+    outer_boundary_index = grid.r_full.shape[0] - 1
     cell_volume = jax.vmap(
         lambda r: radial_shell_volume(jnp.asarray(1.0), r, grid.dr)
     )(grid.r_full)
@@ -298,8 +389,10 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
         deposited_mass = jnp.sum(mass_density * cell_volume)
         deposited_charge = jnp.sum(charge_density * cell_volume)
 
-        assert jnp.allclose(mass_density[boundary_indices], 0.0)
-        assert jnp.allclose(charge_density[boundary_indices], 0.0)
+        assert mass_density[0] > 0.0
+        assert charge_density[0] > 0.0
+        assert mass_density[outer_boundary_index] == 0.0
+        assert charge_density[outer_boundary_index] == 0.0
         assert jnp.allclose(
             deposited_mass,
             jnp.sum(particles.get_mass()),
@@ -363,10 +456,8 @@ def test_charge_density_is_independent_of_particle_momentum():
         assert jnp.allclose(moving_charge_density, stationary_charge_density)
         assert jnp.allclose(jitted_charge_density, moving_charge_density)
         assert jnp.allclose(deposited_charge, expected_charge)
-        assert jnp.allclose(
-            moving_charge_density[jnp.asarray([0, -1])],
-            0.0,
-        )
+        assert moving_charge_density[0] > 0.0
+        assert moving_charge_density[-1] == 0.0
 
 
 def test_shape_jit_matches_eager_and_preserves_boundary_stencil():
@@ -401,6 +492,6 @@ def test_shape_jit_matches_eager_and_preserves_boundary_stencil():
         )
 
         assert jnp.allclose(jitted_weights, eager_weights)
-        assert jnp.all(indices >= 1)
+        assert jnp.all(indices >= 0)
         assert jnp.all(indices <= grid.r_full.shape[0] - 2)
         assert jnp.allclose(jnp.sum(stencil_weights, axis=0), 1.0)

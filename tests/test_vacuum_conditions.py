@@ -229,7 +229,7 @@ def test_schwarzschild_rescale_matches_outer_boundary_cell():
     assert jnp.allclose(rescaled_particles.weight, particles.weight)
 
 
-def test_vacuum_rescale_pads_zero_lapse_rescaling_denominator():
+def test_vacuum_rescale_keeps_zero_lapse_rescaling_singularity_visible():
     particles = make_species(charge=0.0, mass=0.0, weight=0.0)
     r_grid = jnp.asarray([0.0, 1.0, 2.0, 3.0])
     A = jnp.ones_like(r_grid)
@@ -250,9 +250,9 @@ def test_vacuum_rescale_pads_zero_lapse_rescaling_denominator():
 
     assert jnp.all(jnp.isfinite(A_matched))
     assert jnp.all(jnp.isfinite(phi_matched))
-    assert jnp.all(jnp.isfinite(alpha_matched))
+    assert not jnp.all(jnp.isfinite(alpha_matched))
     assert jnp.all(jnp.isfinite(Krr_matched))
-    assert jnp.all(jnp.isfinite(beta_matched))
+    assert not jnp.all(jnp.isfinite(beta_matched))
     assert jnp.all(jnp.isfinite(Er_matched))
     assert jnp.all(jnp.isfinite(mass_density))
     assert jnp.all(jnp.isfinite(charge_density))
@@ -262,7 +262,7 @@ def test_vacuum_rescale_pads_zero_lapse_rescaling_denominator():
     assert jnp.all(jnp.isfinite(rescaled_particles.r))
     assert jnp.all(jnp.isfinite(rescaled_particles.ur))
     assert jnp.isfinite(X_r)
-    assert jnp.isfinite(X_t)
+    assert X_t == 0.0
 
 
 def test_covariant_particle_and_source_rescaling_preserves_lorentz_factor():

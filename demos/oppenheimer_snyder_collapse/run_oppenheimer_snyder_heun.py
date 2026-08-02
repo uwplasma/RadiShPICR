@@ -273,7 +273,7 @@ SAVE_EVERY = 1
 # save every completed step by default for compatibility
 
 total_star_mass = 1.0
-target_schwarzschild_time = 45.1 * total_star_mass
+target_schwarzschild_time = 54 * total_star_mass
 schwarzschild_time_tolerance = 1.0e-10 * total_star_mass
 surface_areal_radius = 10.0
 number_density = total_star_mass / (4/3 * jnp.pi * surface_areal_radius**3)
@@ -315,6 +315,9 @@ particles, particle_areal_radius, total_rest_mass = (
 )
 
 # define the initial particle species
+
+
+
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--save-every", type=int, default=SAVE_EVERY)

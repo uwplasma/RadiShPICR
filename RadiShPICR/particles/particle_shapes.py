@@ -3,8 +3,6 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 
-# from RadiShPICR.ConstraintBasedRelativity.utils import nearest_interior_index
-
 
 def _linear_shape_weight(delta):
     """Evaluate the one-dimensional linear CIC shape function."""
@@ -27,28 +25,26 @@ def _quadratic_shape_weight(delta):
 
 
 def nearest_interior_index(radial_positions, grid):
-    """Map particles to the nearest interior grid point.
-
-    The two edge cells are reserved as vacuum boundary cells, so matter is only
-    deposited on indices `1` through `N-2`.
-    """
+    """Map particles to the nearest radial point with origin reflection."""
 
     floating_index = (radial_positions - grid.r_full[0]) / grid.dr
     nearest = jnp.rint(floating_index).astype(jnp.int32)
-    return jnp.clip(nearest, 1, grid.r_full.shape[0] - 2)
+    reflected_nearest = jnp.abs(nearest)
+
+    return jnp.clip(reflected_nearest, 0, grid.r_full.shape[0] - 2)
 
 
 @partial(jax.jit, static_argnames=("shape_mode",))
-def radial_shape_stencil(radial_positions, grid, shape_mode="nearest"):
-    """Return radial deposition/interpolation indices and weights."""
+def radial_shape_stencil(radial_positions, grid, shape_mode="nearest", parity=1):
+    """Return radial indices and weights with parity reflection at the origin."""
 
     if shape_mode == "nearest":
-        indices = nearest_interior_index(radial_positions, grid)[jnp.newaxis, :]
-        weights = jnp.ones_like(indices, dtype=radial_positions.dtype)
-        return indices, weights
-
-    floating_index = (radial_positions - grid.r_full[0]) / grid.dr
-    if shape_mode == "linear":
+        floating_index = (radial_positions - grid.r_full[0]) / grid.dr
+        anchor = jnp.rint(floating_index).astype(jnp.int32)
+        raw_indices = anchor[jnp.newaxis, :]
+        raw_weights = jnp.ones_like(raw_indices, dtype=radial_positions.dtype)
+    elif shape_mode == "linear":
+        floating_index = (radial_positions - grid.r_full[0]) / grid.dr
         anchor = jnp.floor(floating_index).astype(jnp.int32)
         delta = floating_index - anchor.astype(radial_positions.dtype)
         offsets = jnp.asarray([0, 1], dtype=anchor.dtype)
@@ -59,6 +55,7 @@ def radial_shape_stencil(radial_positions, grid, shape_mode="nearest"):
         )
         raw_weights = _linear_shape_weight(stencil_delta)
     else:
+        floating_index = (radial_positions - grid.r_full[0]) / grid.dr
         anchor = jnp.rint(floating_index).astype(jnp.int32)
         delta = floating_index - anchor.astype(radial_positions.dtype)
         offsets = jnp.asarray([-1, 0, 1], dtype=anchor.dtype)
@@ -69,29 +66,45 @@ def radial_shape_stencil(radial_positions, grid, shape_mode="nearest"):
         )
         raw_weights = _quadratic_shape_weight(stencil_delta)
 
-    raw_indices = anchor[jnp.newaxis, :] + offsets[:, jnp.newaxis]
+    if shape_mode != "nearest":
+        raw_indices = anchor[jnp.newaxis, :] + offsets[:, jnp.newaxis]
 
-    first_interior = jnp.asarray(1, dtype=raw_indices.dtype)
+    reflected_indices = jnp.abs(raw_indices)
     last_interior = jnp.asarray(grid.r_full.shape[0] - 2, dtype=raw_indices.dtype)
-    valid_source_cell = jnp.logical_and(
-        raw_indices >= first_interior,
-        raw_indices <= last_interior,
+    valid_source_cell = reflected_indices <= last_interior
+
+    retained_weights = jnp.where(valid_source_cell, raw_weights, 0.0)
+    weight_sum = jnp.sum(retained_weights, axis=0, keepdims=True)
+
+    parity_value = jnp.asarray(parity, dtype=raw_weights.dtype)
+    origin_value = jnp.where(parity_value < 0.0, 0.0, 1.0)
+    reflection_sign = jnp.where(
+        raw_indices < 0,
+        parity_value,
+        jnp.where(raw_indices == 0, origin_value, 1.0),
     )
-    interior_weights = jnp.where(valid_source_cell, raw_weights, 0.0)
-    weight_sum = jnp.sum(interior_weights, axis=0, keepdims=True)
+    parity_weights = retained_weights * reflection_sign
 
     fallback_index = nearest_interior_index(radial_positions, grid)[jnp.newaxis, :]
     fallback_indices = jnp.broadcast_to(fallback_index, raw_indices.shape)
-    clipped_indices = jnp.clip(raw_indices, first_interior, last_interior)
+    clipped_indices = jnp.clip(reflected_indices, 0, last_interior)
     has_valid_weight = weight_sum > 0.0
 
-    fallback_weights = jnp.zeros_like(interior_weights)
-    fallback_weights = fallback_weights.at[0, :].set(1.0)
+    fallback_raw_index = jnp.rint(
+        (radial_positions - grid.r_full[0]) / grid.dr
+    )
+    fallback_sign = jnp.where(
+        fallback_raw_index < 0,
+        parity_value,
+        jnp.where(fallback_raw_index == 0, origin_value, 1.0),
+    )
+    fallback_weights = jnp.zeros_like(retained_weights)
+    fallback_weights = fallback_weights.at[0, :].set(fallback_sign)
 
     indices = jnp.where(has_valid_weight, clipped_indices, fallback_indices)
     weights = jnp.where(
         has_valid_weight,
-        interior_weights / jnp.where(has_valid_weight, weight_sum, 1.0),
+        parity_weights / jnp.where(has_valid_weight, weight_sum, 1.0),
         fallback_weights,
     )
 
@@ -146,37 +159,80 @@ def unbounded_radial_shape_stencil(
 
 
 @partial(jax.jit, static_argnames=("shape_mode",))
-def interpolate_field_to_particles(field, radial_positions, grid, shape_mode="nearest"):
+def interpolate_field_to_particles(
+    field,
+    radial_positions,
+    grid,
+    shape_mode="nearest",
+    parity=1,
+):
     """Interpolate a radial grid field to particle positions."""
 
     if shape_mode == "nearest":
-        return jnp.interp(radial_positions, grid.r_full, field)
+        reflected_positions = jnp.abs(radial_positions)
+        interpolated_field = jnp.interp(reflected_positions, grid.r_full, field)
+        origin_value = jnp.where(parity < 0, 0.0, 1.0)
+        reflection_sign = jnp.where(
+            radial_positions < 0.0,
+            parity,
+            jnp.where(radial_positions == 0.0, origin_value, 1.0),
+        )
+        return reflection_sign * interpolated_field
 
     indices, weights = radial_shape_stencil(
         radial_positions,
         grid,
         shape_mode=shape_mode,
+        parity=parity,
     )
     return jnp.sum(field[indices] * weights, axis=0)
 
 
 @partial(jax.jit, static_argnames=("shape_mode",))
-def interpolate_fields_to_particles(fields, radial_positions, grid, shape_mode="nearest"):
+def interpolate_fields_to_particles(
+    fields,
+    radial_positions,
+    grid,
+    shape_mode="nearest",
+    field_parities=None,
+):
     """Interpolate several radial fields using one particle stencil."""
 
     fields = jnp.asarray(fields)
+    if field_parities is None:
+        field_parities = jnp.ones(fields.shape[0], dtype=fields.dtype)
+    else:
+        field_parities = jnp.asarray(field_parities, dtype=fields.dtype)
 
     if shape_mode == "nearest":
-        return jax.vmap(
-            lambda field: jnp.interp(radial_positions, grid.r_full, field)
+        reflected_positions = jnp.abs(radial_positions)
+        interpolated_fields = jax.vmap(
+            lambda field: jnp.interp(reflected_positions, grid.r_full, field)
         )(fields)
+        reflection_sign = jnp.where(
+            radial_positions[jnp.newaxis, :] < 0.0,
+            field_parities[:, jnp.newaxis],
+            jnp.where(
+                jnp.logical_and(
+                    radial_positions[jnp.newaxis, :] == 0.0,
+                    field_parities[:, jnp.newaxis] < 0.0,
+                ),
+                0.0,
+                1.0,
+            ),
+        )
+        return reflection_sign * interpolated_fields
 
-    indices, weights = radial_shape_stencil(
-        radial_positions,
-        grid,
-        shape_mode=shape_mode,
-    )
-    return jnp.sum(fields[:, indices] * weights[jnp.newaxis, :, :], axis=1)
+    def interpolate_one_field(field, parity):
+        indices, weights = radial_shape_stencil(
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            parity=parity,
+        )
+        return jnp.sum(field[indices] * weights, axis=0)
+
+    return jax.vmap(interpolate_one_field)(fields, field_parities)
 
 
 def shape_weights_at_point(
@@ -185,6 +241,7 @@ def shape_weights_at_point(
     dr,
     shape_mode="nearest",
     grid=None,
+    parity=1,
 ):
     """Evaluate particle weights at one radial coordinate.
 
@@ -198,6 +255,7 @@ def shape_weights_at_point(
             radial_positions,
             grid,
             shape_mode=shape_mode,
+            parity=parity,
         )
         floating_index = (radial_coordinate - grid.r_full[0]) / grid.dr
         grid_index = jnp.rint(floating_index).astype(indices.dtype)
