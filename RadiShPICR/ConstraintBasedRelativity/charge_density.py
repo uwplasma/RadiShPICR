@@ -1,6 +1,6 @@
 import jax.numpy as jnp
 from RadiShPICR.particles.particle_shapes import shape_weights_at_point
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 
 
 def charge_density_at_point(
@@ -21,12 +21,14 @@ def charge_density_at_point(
         particle_shape,
         grid=grid,
     )
-    A_for_volume = pad_value(A_at_point)
+
     cell_volume = radial_shell_volume(
-        A_for_volume,
+        A_at_point,
         radial_coordinate,
         dr,
     )
 
-    # Each macro-particle carries fixed charge; W weights energy, not charge.
-    return jnp.sum(particles.get_charge() * weights / cell_volume)
+    conformal_charge_density = jnp.sum(particles.get_charge() * weights)
+    charge_density = conformal_charge_density / cell_volume
+
+    return charge_density

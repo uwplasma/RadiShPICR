@@ -1,7 +1,5 @@
 import jax.numpy as jnp
 
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value
-
 
 def total_particle_mass(particles):
     """Total macro-particle mass from the particle getter contract."""
@@ -34,7 +32,7 @@ def reissner_nordstrom_lapse(r, mass, charge):
     numerator = (1.0 - mass / (2.0 * r)) * (1.0 + mass / (2.0 * r))
     numerator = numerator + charge_radius_squared / (4.0 * r**2)
 
-    return numerator / pad_value(reissner_nordstrom_A(r, mass, charge))
+    return numerator / reissner_nordstrom_A(r, mass, charge)
 
 
 def vacuum_rescale_factors(A_outer, alpha_outer, r_outer, mass, charge):
@@ -93,19 +91,18 @@ def rescale_to_vacuum_coordinates(
         exterior_mass,
         exterior_charge,
     )
-    X_r_for_denominators = pad_value(X_r)
-    X_t_for_denominators = pad_value(X_t)
 
-    A = A / X_r_for_denominators
-    phi = phi / X_r_for_denominators ** (3.0 / 2.0)
-    alpha = alpha / X_t_for_denominators
-    beta_over_r = beta_over_r / X_t_for_denominators
+
+    A = A / X_r
+    phi = phi / X_r ** (3.0 / 2.0)
+    alpha = alpha / X_t
+    beta_over_r = beta_over_r / X_t
     # Er is covariant, so E_r transforms with dr / dr* = 1 / X_r.
-    Er = Er / X_r_for_denominators
+    Er = Er / X_r
     rescaled_grid = X_r * r_grid
 
-    Srr = Srr / X_r_for_denominators**2
-    Sr = Sr / X_r_for_denominators
+    Srr = Srr / X_r**2
+    Sr = Sr / X_r
     source_terms = (mass_density, charge_density, Srr, Sr)
 
     rescaled_particles = type(particles)(
@@ -114,7 +111,7 @@ def rescale_to_vacuum_coordinates(
         mass=particles.masses,
         weight=particles.weight,
         r=X_r * particles.r,
-        ur=particles.ur / X_r_for_denominators,
+        ur=particles.ur / X_r,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,

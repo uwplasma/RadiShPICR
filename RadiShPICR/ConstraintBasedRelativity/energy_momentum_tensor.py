@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 from RadiShPICR.particles.particle_shapes import shape_weights_at_point
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 
 
 def Sr_at_point(
@@ -23,15 +23,17 @@ def Sr_at_point(
         particle_shape,
         grid=grid,
     )
-    safe_r = jnp.maximum(jnp.asarray(radial_coordinate, dtype=r_particle.dtype), 0.5 * dr)
-    A_for_denominators = pad_value(A_at_point)
+
     cell_volume = radial_shell_volume(
-        A_for_denominators,
+        A_at_point,
         radial_coordinate,
         dr,
     )
 
-    return jnp.sum(particles.get_mass() * weights * ur / cell_volume)
+    conformal_Sr = jnp.sum(particles.get_mass() * weights * ur)
+    Sr = conformal_Sr / cell_volume
+
+    return Sr
 
 
 def Srr_at_point(
@@ -53,17 +55,19 @@ def Srr_at_point(
         particle_shape,
         grid=grid,
     )
-    safe_r = jnp.maximum(jnp.asarray(radial_coordinate, dtype=r_particle.dtype), 0.5 * dr)
-    A_for_denominators = pad_value(A_at_point)
+
     lorentz_factor = jnp.sqrt(
         1.0
-        + ur**2 / A_for_denominators**2
-        + uphi**2 / (safe_r**2 * A_for_denominators**2)
+        + ur**2 / A_at_point**2
+        + uphi**2 / (radial_coordinate**2 * A_at_point**2)
     )
     cell_volume = radial_shell_volume(
-        A_for_denominators,
+        A_at_point,
         radial_coordinate,
         dr,
     )
 
-    return jnp.sum(particles.get_mass() * weights * ur**2 / (cell_volume * lorentz_factor))
+    conformal_Srr = jnp.sum(particles.get_mass() * weights * ur**2 / lorentz_factor)
+    Srr = conformal_Srr / cell_volume
+
+    return Srr

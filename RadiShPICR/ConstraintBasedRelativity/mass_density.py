@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 from RadiShPICR.particles.particle_shapes import shape_weights_at_point
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 
 
 def mass_density_at_point(
@@ -23,17 +23,21 @@ def mass_density_at_point(
         particle_shape,
         grid=grid,
     )
-    safe_r = jnp.maximum(jnp.asarray(radial_coordinate, dtype=r_particle.dtype), 0.5 * dr)
-    A_for_denominators = pad_value(A_at_point)
+
+
     lorentz_factors = jnp.sqrt(
         1.0
-        + ur**2 / A_for_denominators**2
-        + uphi**2 / (A_for_denominators**2 * safe_r**2)
+        + ur**2 / A_at_point**2
+        + uphi**2 / (A_at_point**2 * radial_coordinate**2)
     )
 
     cell_volume = radial_shell_volume(
-        A_for_denominators,
+        A_at_point,
         radial_coordinate,
         dr,
     )
-    return jnp.sum(particles.get_mass() * weights * lorentz_factors / cell_volume)
+
+    conformal_mass_density = jnp.sum(particles.get_mass() * weights * lorentz_factors)
+    mass_density = conformal_mass_density / cell_volume
+
+    return mass_density
