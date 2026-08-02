@@ -2,12 +2,8 @@ import jax.numpy as jnp
 from jax import lax
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 from RadiShPICR.particles.particle_shapes import radial_shape_stencil
-
-
-def _safe_radius(r, dr):
-    return jnp.maximum(r, 0.5 * dr)
 
 
 def dr_A(U_state):
@@ -18,16 +14,10 @@ def dr_A(U_state):
 def dr_sqrt_phi(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
-    A_for_denominators = pad_value(A)
     # Er is the covariant radial field, so E_i E^i = Er^2 / A^2.
-    mass_energy_density = rho + 0.5 * Er**2 / A_for_denominators**2
+    mass_energy_density = rho + 0.5 * Er**2 / A**2
 
-    if dr is None:
-        safe_r = jnp.where(r == 0.0, 1.0, r)
-    else:
-        safe_r = _safe_radius(r, dr)
-
-    interior_term = -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * mass_energy_density - 2.0 * phi / safe_r
+    interior_term = -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * mass_energy_density - 2.0 * phi / r
     center_term = (
         -2.0 * jnp.pi * jnp.sqrt(A) ** 5 * mass_energy_density / 3.0
     )
@@ -38,15 +28,14 @@ def dr_sqrt_phi(U_state, dr=None):
 def dr_alpha(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
-    A_for_denominators = pad_value(A)
-    # A radial electric field contributes tension along the field direction.
-    total_Srr = Srr - 0.5 * Er**2
+    total_Srr = Srr - 0.5 * Er**2 / A**2
+    # account for the fact that Er is the covariant radial field, so E_i E^i = Er^2 / A^2.
 
     first_term = 4.0 * jnp.pi * alpha * total_Srr * r * A
     second_term = -2.0 * alpha * phi * jnp.sqrt(A)
     third_term = -2.0 * alpha * phi**2 * r
-    denominator = A_for_denominators * (
-        1.0 + 2.0 * r * phi / jnp.sqrt(A_for_denominators)
+    denominator = A * (
+        1.0 + 2.0 * r * phi / jnp.sqrt( A )
     )
 
     return (first_term + second_term + third_term) / denominator
@@ -55,17 +44,16 @@ def dr_alpha(U_state, dr=None):
 def Krr_from_state(U_state):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
-    A_for_denominators = pad_value(A)
 
     return 4.0 * jnp.pi * r * Sr / (
-        1.0 + 2.0 * r * phi / jnp.sqrt(A_for_denominators)
+        1.0 + 2.0 * r * phi / jnp.sqrt( A )
     )
 
 
 def dr_beta_over_r(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
-    safe_r = jnp.where(r == 0.0, 1.0, r) if dr is None else _safe_radius(r, dr)
-    return jnp.where(r == 0.0, 0.0, alpha * Krr_from_state(U_state) / safe_r)
+
+    return jnp.where(r == 0.0, 0.0, alpha * Krr_from_state(U_state) / r)
 
 
 def beta_over_r_from_integral(alpha, Krr, r, dr):
@@ -88,13 +76,11 @@ def beta_over_r_from_integral(alpha, Krr, r, dr):
 def dr_Er(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
-    A_for_denominators = pad_value(A)
 
-    safe_r = jnp.where(r == 0.0, 1.0, r) if dr is None else _safe_radius(r, dr)
     interior_term = (
         A**2 * charge_density
-        - 2.0 * Er / safe_r
-        - 2.0 * phi * Er / jnp.sqrt(A_for_denominators)
+        - 2.0 * Er / r
+        - 2.0 * phi * Er / jnp.sqrt(A)
     )
     center_term = A**2 * charge_density / 3.0
 
@@ -111,6 +97,7 @@ def _source_terms_at_point(
     r_particle, _ = particles.get_positions()
     ur, uphi = particles.get_velocities()
     dr = grid.dr
+    # get the particle positions and velocities
 
     if particle_stencil is None:
         particle_stencil = radial_shape_stencil(
@@ -122,34 +109,39 @@ def _source_terms_at_point(
     indices, stencil_weights = particle_stencil
     floating_index = (radial_coordinate - grid.r_full[0]) / dr
     grid_index = jnp.rint(floating_index).astype(indices.dtype)
+    # get the weights for the particles that contribute to this grid point
+
     weights = jnp.sum(
         jnp.where(indices == grid_index, stencil_weights, 0.0),
         axis=0,
     )
 
-    safe_r = jnp.maximum(
-        jnp.asarray(radial_coordinate, dtype=r_particle.dtype),
-        0.5 * dr,
-    )
-    A_for_denominators = pad_value(A_at_point)
+
     lorentz_factor = jnp.sqrt(
         1.0
-        + ur**2 / A_for_denominators**2
-        + uphi**2 / (A_for_denominators**2 * safe_r**2)
+        + ur**2 / A_at_point**2
+        + uphi**2 / (A_at_point**2 * radial_coordinate**2)
     )
+    # The Lorentz factor is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
+
     cell_volume = radial_shell_volume(
-        A_for_denominators,
+        A_at_point,
         radial_coordinate,
         dr,
     )
+    # the volume of the cell is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
 
     weighted_mass = particles.get_mass() * weights
-    mass_density = jnp.sum(weighted_mass * lorentz_factor / cell_volume)
-    charge_density = jnp.sum(particles.get_charge() * weights / cell_volume)
-    Srr = jnp.sum(
-        weighted_mass * ur**2 / (cell_volume * lorentz_factor)
-    )
-    Sr = jnp.sum(weighted_mass * ur / cell_volume)
+    conformal_mass_density = jnp.sum(weighted_mass * lorentz_factor)
+    conformal_charge_density = jnp.sum(particles.get_charge() * weights)
+    conformal_Srr = jnp.sum(weighted_mass * ur**2 / lorentz_factor)
+    conformal_Sr = jnp.sum(weighted_mass * ur)
+    # compute the mass density, charge density, and stress-energy tensor components in the conformal frame
+    mass_density = conformal_mass_density / cell_volume
+    charge_density = conformal_charge_density / cell_volume
+    Srr = conformal_Srr / cell_volume
+    Sr = conformal_Sr / cell_volume
+    # compute the mass density, charge density, and stress-energy tensor components in the physical frame by dividing by the cell volume, which is computed using the metric at the grid point.
 
     return mass_density, charge_density, Srr, Sr
 
