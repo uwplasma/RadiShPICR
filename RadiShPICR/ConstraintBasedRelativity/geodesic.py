@@ -3,7 +3,6 @@ import jax.numpy as jnp
 from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import dr_A, dr_alpha, dr_beta_over_r
-from RadiShPICR.ConstraintBasedRelativity.utils import pad_value, safe_radius
 
 
 def _field_interpolation_grid(r_grid):
@@ -62,27 +61,26 @@ def compute_geodesic_terms(particles, U_state):
         shape_mode=shape_mode,
     )
 
-    safe_r_particle = safe_radius(r, 0.5 * dr_grid)
-    A_for_denominators = pad_value(A_at_particle)
+
     W = jnp.sqrt(
         1.0
-        + ur**2 / A_for_denominators**2
-        + uphi**2 / (safe_r_particle**2 * A_for_denominators**2)
+        + ur**2 / A_at_particle**2
+        + uphi**2 / (r**2 * A_at_particle**2)
     )
 
-    dr_dt = lapse_at_particle * ur / (A_for_denominators**2 * W) - shift_at_particle
+    dr_dt = lapse_at_particle * ur / (A_at_particle**2 * W) - shift_at_particle
 
     du_r_dt = -W * d_lapse_dr_at_particle + ur * d_shift_dr_at_particle
     du_r_dt = du_r_dt + (
-        lapse_at_particle * ur**2 * dA_dr_at_particle / (A_for_denominators**3 * W)
+        lapse_at_particle * ur**2 * dA_dr_at_particle / (A_at_particle**3 * W)
     )
     du_r_dt = du_r_dt + (
         lapse_at_particle
         * uphi**2
         / W
         * (
-            1.0 / (safe_r_particle**3 * A_for_denominators**2)
-            + dA_dr_at_particle / (safe_r_particle**2 * A_for_denominators**3)
+            1.0 / (r**3 * A_at_particle**2)
+            + dA_dr_at_particle / (r**2 * A_at_particle**3)
         )
     )
 

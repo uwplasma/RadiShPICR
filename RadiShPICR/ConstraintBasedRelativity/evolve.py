@@ -3,38 +3,18 @@ import jax.numpy as jnp
 from RadiShPICR.ConstraintBasedRelativity.geodesic import compute_geodesic_terms
 from RadiShPICR.ConstraintBasedRelativity.lorentz_force import compute_lorentz_terms
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import calculate_metric
-from RadiShPICR.ConstraintBasedRelativity.utils import safe_radius
-
-
-def _freeze_center_particles(particles):
-    """Absorb particles that reach the regular center into an inert r = 0 state."""
-
-    center_particles = particles.r <= 0.0
-
-    particles.r = jnp.where(center_particles, 0.0, particles.r)
-    particles.ur = jnp.where(center_particles, 0.0, particles.ur)
-    particles.uphi = jnp.where(center_particles, 0.0, particles.uphi)
-
-    return particles
-
 
 def step(particles, r_grid, dr, dt):
-    particles = _freeze_center_particles(particles)
     dr_dt, dphi_dt, dur_dt = _particle_derivatives(particles, r_grid, dr)
 
     r, phi = particles.get_positions()
     ur, uphi = particles.get_velocities()
-    center_particles = r <= 0.0
-
-    dr_dt = jnp.where(center_particles, 0.0, dr_dt)
-    dur_dt = jnp.where(center_particles, 0.0, dur_dt)
 
     particles.r = r + dr_dt * dt
     particles.ur = ur + dur_dt * dt
     particles.phi = phi + dphi_dt * dt
     particles.uphi = uphi
 
-    particles = _freeze_center_particles(particles)
 
     return particles
 
@@ -52,11 +32,11 @@ def _copy_particle_state(particles, r, phi, ur):
         shape_mode=particles.shape_mode,
     )
 
-    return _freeze_center_particles(stage_particles)
+    return stage_particles
 
 
 def _particle_derivatives(particles, r_grid, dr, U_state=None):
-    particles = _freeze_center_particles(particles)
+
     if U_state is None:
         U_state = calculate_metric(particles, r_grid, dr)
     dr_dt, dur_dt_GR = compute_geodesic_terms(particles, U_state)
@@ -64,20 +44,13 @@ def _particle_derivatives(particles, r_grid, dr, U_state=None):
 
     r, _ = particles.get_positions()
     _, uphi = particles.get_velocities()
-    dphi_dt = uphi / safe_radius(r, 0.5 * dr)
+    dphi_dt = uphi / (r)
     dur_dt = dur_dt_GR + dur_dt_EM
-
-    center_particles = r <= 0.0
-
-    dr_dt = jnp.where(center_particles, 0.0, dr_dt)
-    dphi_dt = jnp.where(center_particles, 0.0, dphi_dt)
-    dur_dt = jnp.where(center_particles, 0.0, dur_dt)
 
     return dr_dt, dphi_dt, dur_dt
 
 
 def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
-    particles = _freeze_center_particles(particles)
 
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()
@@ -120,7 +93,6 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
     particles.ur = ur0 + (dt / 6.0) * (k1_ur + 2.0 * k2_ur + 2.0 * k3_ur + k4_ur)
     particles.uphi = uphi0
 
-    particles = _freeze_center_particles(particles)
 
     return particles
 
