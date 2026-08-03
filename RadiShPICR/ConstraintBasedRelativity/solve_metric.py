@@ -7,6 +7,11 @@ from RadiShPICR.ConstraintBasedRelativity.utils import (
     angular_lorentz_term,
     radial_shell_volume,
 )
+from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
+    total_particle_charge,
+    total_particle_mass,
+    vacuum_rescale_factors,
+)
 from RadiShPICR.particles.particle_shapes import radial_shape_stencil
 
 
@@ -297,19 +302,19 @@ def heuns_method(U_state, dr, particles, grid):
     )
 
 
-def calculate_metric(particles, r_grid, dr):
-    r_grid = jnp.asarray(r_grid)
-    dr = jnp.asarray(dr, dtype=r_grid.dtype)
-    grid = RadialGrid(
-        r_full=r_grid,
-        r_interior=r_grid[1:-1],
-        # The origin is parity-filled; only the outer endpoint remains vacuum.
-        dr=dr,
-        r_max=r_grid[-1],
-    )
-    initial_A = jnp.asarray(1.0, dtype=r_grid.dtype)
+def _integrate_metric_from_origin(
+    particles,
+    grid,
+    center_A,
+    center_alpha,
+):
+    """Integrate one radial Heun shot from the supplied origin values."""
+
+    r_grid = grid.r_full
+    dr = jnp.asarray(grid.dr, dtype=r_grid.dtype)
+    initial_A = jnp.asarray(center_A, dtype=r_grid.dtype)
     initial_phi = jnp.asarray(0.0, dtype=r_grid.dtype)
-    initial_alpha = jnp.asarray(1.0, dtype=r_grid.dtype)
+    initial_alpha = jnp.asarray(center_alpha, dtype=r_grid.dtype)
     initial_Krr = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_beta_over_r = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_Er = jnp.asarray(0.0, dtype=r_grid.dtype)
@@ -431,3 +436,43 @@ def calculate_metric(particles, r_grid, dr):
     )
 
     return U_state
+
+
+def calculate_metric(particles, r_grid, dr):
+    """Solve the radial constraints with two vacuum-rescaled Heun shots."""
+
+    r_grid = jnp.asarray(r_grid)
+    dr = jnp.asarray(dr, dtype=r_grid.dtype)
+    grid = RadialGrid(
+        r_full=r_grid,
+        r_interior=r_grid[1:-1],
+        # The origin is parity-filled; only the outer endpoint remains vacuum.
+        dr=dr,
+        r_max=r_grid[-1],
+    )
+
+    trial_U_state = _integrate_metric_from_origin(
+        particles,
+        grid,
+        center_A=jnp.asarray(1.0, dtype=r_grid.dtype),
+        center_alpha=jnp.asarray(1.0, dtype=r_grid.dtype),
+    )
+    trial_A, _, trial_alpha, _, _, _, _, trial_r_grid = trial_U_state
+
+    X_r, X_t = vacuum_rescale_factors(
+        trial_A[-1],
+        trial_alpha[-1],
+        trial_r_grid[-1],
+        total_particle_mass(particles),
+        total_particle_charge(particles),
+    )
+
+    center_A = trial_A[0] / X_r
+    center_alpha = trial_alpha[0] / X_t
+
+    return _integrate_metric_from_origin(
+        particles,
+        grid,
+        center_A=center_A,
+        center_alpha=center_alpha,
+    )

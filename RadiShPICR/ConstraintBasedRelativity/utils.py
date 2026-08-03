@@ -29,11 +29,12 @@ def angular_lorentz_term(uphi, A, radial_coordinate):
 def radial_shell_volume(A, radial_coordinate, dr):
     """Proper volume of the spherical cell centered at ``radial_coordinate``."""
 
-    coordinate_volume = 4.0 * jnp.pi * radial_coordinate**2 * dr
-    # use the coordinate volume based on the papers
-
-    coordinate_volume = jnp.where(radial_coordinate == 0, 4.0 * jnp.pi * (dr/2)**2 * dr, coordinate_volume)
-    # parity average across the origin for the innermost cell, which is centered at r=0 produces a flat 
-    # volume of the cell with radius dr/2, so the volume is 4*pi*(dr/2)^2 * dr
+    inner_radius = jnp.maximum(radial_coordinate - 0.5 * dr, 0.0)
+    outer_radius = radial_coordinate + 0.5 * dr
+    coordinate_volume = (
+        (4.0 * jnp.pi / 3.0) * (outer_radius**3 - inner_radius**3)
+    )
+    # Integrate the spherical coordinate volume between cell faces. The metric
+    # factor remains centered at the grid point, as in the existing deposition.
 
     return A**3 * coordinate_volume

@@ -4,7 +4,10 @@ import jax.numpy as jnp
 from RadiShPICR.ConstraintBasedRelativity.charge_density import charge_density_at_point
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.mass_density import mass_density_at_point
-from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
+from RadiShPICR.ConstraintBasedRelativity.utils import (
+    angular_lorentz_term,
+    radial_shell_volume,
+)
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
     interpolate_field_to_particles,
@@ -30,6 +33,62 @@ def make_grid(r_max=8.0, dr=1.0):
         dr=dr,
         r_max=r_max,
     )
+
+
+def test_radial_shell_volume_uses_spherical_cell_faces():
+    A = jnp.asarray(1.4)
+    dr = jnp.asarray(0.25)
+    radial_coordinates = jnp.arange(4, dtype=A.dtype) * dr
+
+    inner_radius = jnp.maximum(radial_coordinates - 0.5 * dr, 0.0)
+    outer_radius = radial_coordinates + 0.5 * dr
+    expected = A**3 * (4.0 * jnp.pi / 3.0) * (
+        outer_radius**3 - inner_radius**3
+    )
+
+    actual = radial_shell_volume(A, radial_coordinates, dr)
+    compiled = jax.jit(radial_shell_volume)(A, radial_coordinates, dr)
+
+    assert jnp.allclose(actual, expected)
+    assert jnp.allclose(compiled, expected)
+    assert jnp.allclose(actual[0], A**3 * jnp.pi * dr**3 / 6.0)
+    assert jnp.allclose(actual[1], A**3 * 13.0 * jnp.pi * dr**3 / 3.0)
+
+
+def test_nearest_deposition_recovers_uniform_density_at_origin():
+    grid = make_grid(r_max=6.0, dr=1.0)
+    A = jnp.asarray(1.4)
+    expected_density = jnp.asarray(2.5)
+    particle_coordinates = grid.r_full[:5]
+    particle_volumes = radial_shell_volume(
+        A,
+        particle_coordinates,
+        grid.dr,
+    )
+
+    particles = particle_species(
+        name="uniform",
+        charge=0.0,
+        mass=1.0,
+        weight=expected_density * particle_volumes,
+        # Constrained relativity stores r_s = A r in the particle r field.
+        r=A * particle_coordinates,
+        ur=jnp.zeros_like(particle_coordinates),
+        phi=jnp.zeros_like(particle_coordinates),
+        uphi=jnp.zeros_like(particle_coordinates),
+        shape_mode="nearest",
+    )
+
+    mass_density = jax.vmap(
+        lambda radial_coordinate: mass_density_at_point(
+            particles,
+            A,
+            radial_coordinate,
+            grid,
+        )
+    )(particle_coordinates)
+
+    assert jnp.allclose(mass_density, expected_density)
 
 
 def test_linear_shape_has_expected_cic_weights():
@@ -324,6 +383,94 @@ def test_fused_constraint_sources_match_individual_source_functions():
                 assert jnp.allclose(fused_source, expected_source)
 
 
+def test_constraint_sources_convert_rs_and_ur_over_A_with_local_A():
+    grid = make_grid()
+    A_at_point = jnp.asarray(2.0)
+    radial_coordinate = jnp.asarray(2.0)
+    floating_index = radial_coordinate / grid.dr
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        particles = particle_species(
+            name="moving",
+            charge=3.0,
+            mass=2.0,
+            weight=jnp.asarray([0.25, 0.75]),
+            r=jnp.asarray([3.5, 4.5]),
+            ur=jnp.asarray([0.4, -0.2]),
+            phi=jnp.zeros(2),
+            uphi=jnp.asarray([0.3, -0.1]),
+            shape_mode=shape_mode,
+        )
+
+        r_particle = particles.r / A_at_point
+        covariant_ur = A_at_point * particles.ur
+        even_indices, even_stencil = radial_shape_stencil(
+            r_particle,
+            grid,
+            shape_mode=shape_mode,
+            parity=1,
+        )
+        odd_indices, odd_stencil = radial_shape_stencil(
+            r_particle,
+            grid,
+            shape_mode=shape_mode,
+            parity=-1,
+        )
+        grid_index = jnp.rint(floating_index).astype(even_indices.dtype)
+        even_weights = jnp.sum(
+            jnp.where(even_indices == grid_index, even_stencil, 0.0),
+            axis=0,
+        )
+        odd_weights = jnp.sum(
+            jnp.where(odd_indices == grid_index, odd_stencil, 0.0),
+            axis=0,
+        )
+
+        W = jnp.sqrt(
+            1.0
+            + covariant_ur**2 / A_at_point**2
+            + angular_lorentz_term(
+                particles.uphi,
+                A_at_point,
+                r_particle,
+            )
+        )
+        cell_volume = radial_shell_volume(
+            A_at_point,
+            radial_coordinate,
+            grid.dr,
+        )
+        weighted_mass = particles.get_mass() * even_weights
+        expected = (
+            jnp.sum(weighted_mass * W) / cell_volume,
+            jnp.sum(particles.get_charge() * even_weights) / cell_volume,
+            jnp.sum(weighted_mass * covariant_ur**2 / W) / cell_volume,
+            jnp.sum(particles.get_mass() * odd_weights * covariant_ur)
+            / cell_volume,
+        )
+
+        actual = _source_terms_at_point(
+            particles,
+            A_at_point,
+            radial_coordinate,
+            grid,
+        )
+        compiled = jax.jit(_source_terms_at_point)(
+            particles,
+            A_at_point,
+            radial_coordinate,
+            grid,
+        )
+
+        for actual_source, compiled_source, expected_source in zip(
+            actual,
+            compiled,
+            expected,
+        ):
+            assert jnp.allclose(actual_source, expected_source)
+            assert jnp.allclose(compiled_source, expected_source)
+
+
 def test_nonzero_uphi_source_keeps_origin_singularity_visible():
     grid = make_grid()
     particles = particle_species(
@@ -331,7 +478,7 @@ def test_nonzero_uphi_source_keeps_origin_singularity_visible():
         charge=0.0,
         mass=1.0,
         weight=1.0,
-        r=jnp.asarray([0.25]),
+        r=jnp.asarray([0.0]),
         ur=jnp.asarray([0.0]),
         phi=jnp.asarray([0.0]),
         uphi=jnp.asarray([1.0]),
@@ -405,7 +552,7 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
 
 def test_charge_density_is_independent_of_particle_momentum():
     grid = make_grid()
-    A = 1.0 + 0.05 * grid.r_full
+    A = jnp.full_like(grid.r_full, 1.4)
     cell_volume = jax.vmap(radial_shell_volume, in_axes=(0, 0, None))(
         A,
         grid.r_full,

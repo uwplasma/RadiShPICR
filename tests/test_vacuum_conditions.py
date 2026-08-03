@@ -222,8 +222,8 @@ def test_schwarzschild_rescale_matches_outer_boundary_cell():
     assert jnp.allclose(Er_matched, Er / expected_X_r)
     assert jnp.allclose(Srr_matched, source_terms[2] / expected_X_r**2)
     assert jnp.allclose(Sr_matched, source_terms[3] / expected_X_r)
-    assert jnp.allclose(rescaled_particles.r, expected_X_r * particles.r)
-    assert jnp.allclose(rescaled_particles.ur, particles.ur / expected_X_r)
+    assert jnp.allclose(rescaled_particles.r, particles.r)
+    assert jnp.allclose(rescaled_particles.ur, particles.ur)
     assert jnp.allclose(rescaled_particles.phi, particles.phi)
     assert jnp.allclose(rescaled_particles.uphi, particles.uphi)
     assert jnp.allclose(rescaled_particles.weight, particles.weight)
@@ -265,7 +265,7 @@ def test_vacuum_rescale_keeps_zero_lapse_rescaling_singularity_visible():
     assert X_t == 0.0
 
 
-def test_covariant_particle_and_source_rescaling_preserves_lorentz_factor():
+def test_lapse_freezing_particle_variables_are_invariant_under_rescaling():
     particles = particle_species(
         name="test",
         charge=0.2,
@@ -317,19 +317,20 @@ def test_covariant_particle_and_source_rescaling_preserves_lorentz_factor():
 
     W = jnp.sqrt(
         1.0
-        + particles.ur**2 / A[0] ** 2
-        + particles.uphi**2 / (A[0] ** 2 * particles.r**2)
+        + particles.ur**2
+        + particles.uphi**2 / particles.r**2
     )
     W_rescaled = jnp.sqrt(
         1.0
-        + rescaled_particles.ur**2 / A_matched[0] ** 2
-        + rescaled_particles.uphi**2
-        / (A_matched[0] ** 2 * rescaled_particles.r**2)
+        + rescaled_particles.ur**2
+        + rescaled_particles.uphi**2 / rescaled_particles.r**2
     )
 
     assert jnp.allclose(W_rescaled, W)
     assert jnp.allclose(Sr_matched, source_terms[3] / X_r)
     assert jnp.allclose(Srr_matched, source_terms[2] / X_r**2)
+    assert jnp.allclose(rescaled_particles.r, particles.r)
+    assert jnp.allclose(rescaled_particles.ur, particles.ur)
     assert jnp.allclose(particles.r, original_r)
     assert jnp.allclose(particles.ur, original_ur)
 
