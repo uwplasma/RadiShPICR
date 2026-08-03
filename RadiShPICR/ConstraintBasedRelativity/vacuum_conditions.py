@@ -110,8 +110,10 @@ def rescale_to_vacuum_coordinates(
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=X_r * particles.r,
-        ur=particles.ur / X_r,
+        # r stores r_s = A r and ur stores u_r / A in constrained relativity;
+        # both lapse-freezing variables are invariant under r* = X_r r.
+        r=particles.r,
+        ur=particles.ur,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,

@@ -14,10 +14,12 @@ def Sr_at_point(
     grid,
     shape_mode=None,
 ):
-    r_particle, _ = particles.get_positions()
-    ur, _ = particles.get_velocities()
+    rs, _ = particles.get_positions()
+    ur_over_A, _ = particles.get_velocities()
     particle_shape = particles.get_shape() if shape_mode is None else shape_mode
     dr = grid.dr
+    r_particle = rs / A_at_point
+    ur = A_at_point * ur_over_A
 
     weights = shape_weights_at_point(
         r_particle,
@@ -47,10 +49,12 @@ def Srr_at_point(
     grid,
     shape_mode=None,
 ):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
+    rs, _ = particles.get_positions()
+    ur_over_A, uphi = particles.get_velocities()
     particle_shape = particles.get_shape() if shape_mode is None else shape_mode
     dr = grid.dr
+    r_particle = rs / A_at_point
+    ur = A_at_point * ur_over_A
 
     weights = shape_weights_at_point(
         r_particle,
@@ -63,7 +67,7 @@ def Srr_at_point(
     lorentz_factor = jnp.sqrt(
         1.0
         + ur**2 / A_at_point**2
-        + angular_lorentz_term(uphi, A_at_point, radial_coordinate)
+        + angular_lorentz_term(uphi, A_at_point, r_particle)
     )
     cell_volume = radial_shell_volume(
         A_at_point,

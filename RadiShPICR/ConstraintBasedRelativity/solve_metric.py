@@ -159,31 +159,26 @@ def _source_terms_at_point(
     A_at_point,
     radial_coordinate,
     grid,
-    particle_stencil=None,
 ):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
+    rs, _ = particles.get_positions()
+    ur_over_A, uphi = particles.get_velocities()
     dr = grid.dr
-    # get the particle positions and velocities
+    # The constrained particle class stores r_s and u_r / A. Convert them
+    # with the local Heun value of A before applying the ordinary r stencil.
+    r_particle = rs / A_at_point
+    ur = A_at_point * ur_over_A
 
-    if particle_stencil is None:
-        particle_stencil = (
-            radial_shape_stencil(
-                r_particle,
-                grid,
-                shape_mode=particles.get_shape(),
-                parity=1,
-            ),
-            radial_shape_stencil(
-                r_particle,
-                grid,
-                shape_mode=particles.get_shape(),
-                parity=-1,
-            ),
-        )
-
-    (even_indices, even_stencil_weights), (odd_indices, odd_stencil_weights) = (
-        particle_stencil
+    even_indices, even_stencil_weights = radial_shape_stencil(
+        r_particle,
+        grid,
+        shape_mode=particles.get_shape(),
+        parity=1,
+    )
+    odd_indices, odd_stencil_weights = radial_shape_stencil(
+        r_particle,
+        grid,
+        shape_mode=particles.get_shape(),
+        parity=-1,
     )
     floating_index = (radial_coordinate - grid.r_full[0]) / dr
     grid_index = jnp.rint(floating_index).astype(even_indices.dtype)
@@ -202,7 +197,7 @@ def _source_terms_at_point(
     lorentz_factor = jnp.sqrt(
         1.0
         + ur**2 / A_at_point**2
-        + angular_lorentz_term(uphi, A_at_point, radial_coordinate)
+        + angular_lorentz_term(uphi, A_at_point, r_particle)
     )
     # The Lorentz factor is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
 
@@ -228,7 +223,7 @@ def _source_terms_at_point(
     return mass_density, charge_density, Srr, Sr
 
 
-def heuns_method(U_state, dr, particles, grid, particle_stencil=None):
+def heuns_method(U_state, dr, particles, grid):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
 
     dA_dr = dr_A(U_state)
@@ -246,7 +241,6 @@ def heuns_method(U_state, dr, particles, grid, particle_stencil=None):
         A_predictor,
         r_predictor,
         grid,
-        particle_stencil,
     )
     Krr_predictor = Krr_from_state(
         (A_predictor, phi_predictor, alpha_predictor, Krr, beta_over_r, Er_predictor, source_terms_predictor, r_predictor)
@@ -277,7 +271,6 @@ def heuns_method(U_state, dr, particles, grid, particle_stencil=None):
         A_corrected,
         r_predictor,
         grid,
-        particle_stencil,
     )
     Krr_corrected = Krr_from_state(
         (
@@ -314,21 +307,6 @@ def calculate_metric(particles, r_grid, dr):
         dr=dr,
         r_max=r_grid[-1],
     )
-    particle_stencil = (
-        radial_shape_stencil(
-            particles.r,
-            grid,
-            shape_mode=particles.get_shape(),
-            parity=1,
-        ),
-        radial_shape_stencil(
-            particles.r,
-            grid,
-            shape_mode=particles.get_shape(),
-            parity=-1,
-        ),
-    )
-
     initial_A = jnp.asarray(1.0, dtype=r_grid.dtype)
     initial_phi = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_alpha = jnp.asarray(1.0, dtype=r_grid.dtype)
@@ -341,7 +319,6 @@ def calculate_metric(particles, r_grid, dr):
         initial_A,
         initial_r,
         grid,
-        particle_stencil,
     )
 
     state = (
@@ -361,7 +338,6 @@ def calculate_metric(particles, r_grid, dr):
             local_dr,
             particles,
             grid,
-            particle_stencil,
         )
         A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = state
         mass_density, charge_density, Srr, Sr = source_terms

@@ -1,48 +1,31 @@
-import jax
 import jax.numpy as jnp
-from jax import lax
 
 from RadiShPICR.ConstraintBasedRelativity.geodesic import compute_geodesic_terms
 from RadiShPICR.ConstraintBasedRelativity.lorentz_force import compute_lorentz_terms
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import calculate_metric
 
-
-def _azimuthal_derivative(uphi, r):
-    """Return dphi/dt without evaluating 0 / 0 at the origin."""
-
-    def azimuthal_derivative_at_particle(uphi_particle, r_particle):
-        return lax.cond(
-            uphi_particle == 0.0,
-            lambda: jnp.zeros_like(uphi_particle),
-            lambda: uphi_particle / r_particle,
-        )
-
-    return jax.vmap(azimuthal_derivative_at_particle)(uphi, r)
-
-
 def step(particles, r_grid, dr, dt):
-    dr_dt, dphi_dt, dur_dt = _particle_derivatives(particles, r_grid, dr)
+    drs_dt, dphi_dt, dur_over_A_dt = _particle_derivatives(
+        particles,
+        r_grid,
+        dr,
+    )
 
-    r, phi = particles.get_positions()
-    ur, uphi = particles.get_velocities()
-
-    particles.r = r + dr_dt * dt
-    particles.ur = ur + dur_dt * dt
-    particles.phi = phi + dphi_dt * dt
-    particles.uphi = uphi
-
+    particles.r = particles.r + drs_dt * dt
+    particles.ur = particles.ur + dur_over_A_dt * dt
+    particles.phi = particles.phi + dphi_dt * dt
 
     return particles
 
 
-def _copy_particle_state(particles, r, phi, ur):
+def _copy_particle_state(particles, rs, phi, ur_over_A):
     stage_particles = type(particles)(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=r,
-        ur=ur,
+        r=rs,
+        ur=ur_over_A,
         phi=phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -55,23 +38,22 @@ def _particle_derivatives(particles, r_grid, dr, U_state=None):
 
     if U_state is None:
         U_state = calculate_metric(particles, r_grid, dr)
-    dr_dt, dur_dt_GR = compute_geodesic_terms(particles, U_state)
+
     dur_dt_EM = compute_lorentz_terms(particles, U_state)
-
-    r, _ = particles.get_positions()
-    _, uphi = particles.get_velocities()
-    dphi_dt = _azimuthal_derivative(uphi, r)
-    dur_dt = dur_dt_GR + dur_dt_EM
-
-    return dr_dt, dphi_dt, dur_dt
+    return compute_geodesic_terms(
+        particles,
+        U_state,
+        dur_dt_EM=dur_dt_EM,
+    )
 
 
 def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
+    rs0 = particles.r
+    ur_over_A0 = particles.ur
+    phi0 = particles.phi
+    uphi0 = particles.uphi
 
-    r0, phi0 = particles.get_positions()
-    ur0, uphi0 = particles.get_velocities()
-
-    k1_r, k1_phi, k1_ur = _particle_derivatives(
+    k1_rs, k1_phi, k1_ur_over_A = _particle_derivatives(
         particles,
         r_grid,
         dr,
@@ -80,35 +62,53 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
 
     stage2 = _copy_particle_state(
         particles,
-        r0 + 0.5 * dt * k1_r,
+        rs0 + 0.5 * dt * k1_rs,
         phi0 + 0.5 * dt * k1_phi,
-        ur0 + 0.5 * dt * k1_ur,
+        ur_over_A0 + 0.5 * dt * k1_ur_over_A,
     )
-    k2_r, k2_phi, k2_ur = _particle_derivatives(stage2, r_grid, dr)
+    k2_rs, k2_phi, k2_ur_over_A = _particle_derivatives(
+        stage2,
+        r_grid,
+        dr,
+    )
 
     stage3 = _copy_particle_state(
         particles,
-        r0 + 0.5 * dt * k2_r,
+        rs0 + 0.5 * dt * k2_rs,
         phi0 + 0.5 * dt * k2_phi,
-        ur0 + 0.5 * dt * k2_ur,
+        ur_over_A0 + 0.5 * dt * k2_ur_over_A,
     )
-    k3_r, k3_phi, k3_ur = _particle_derivatives(stage3, r_grid, dr)
+    k3_rs, k3_phi, k3_ur_over_A = _particle_derivatives(
+        stage3,
+        r_grid,
+        dr,
+    )
 
     stage4 = _copy_particle_state(
         particles,
-        r0 + dt * k3_r,
+        rs0 + dt * k3_rs,
         phi0 + dt * k3_phi,
-        ur0 + dt * k3_ur,
+        ur_over_A0 + dt * k3_ur_over_A,
     )
-    k4_r, k4_phi, k4_ur = _particle_derivatives(stage4, r_grid, dr)
+    k4_rs, k4_phi, k4_ur_over_A = _particle_derivatives(
+        stage4,
+        r_grid,
+        dr,
+    )
 
-    particles.r = r0 + (dt / 6.0) * (k1_r + 2.0 * k2_r + 2.0 * k3_r + k4_r)
+    particles.r = rs0 + (dt / 6.0) * (
+        k1_rs + 2.0 * k2_rs + 2.0 * k3_rs + k4_rs
+    )
     particles.phi = phi0 + (dt / 6.0) * (
         k1_phi + 2.0 * k2_phi + 2.0 * k3_phi + k4_phi
     )
-    particles.ur = ur0 + (dt / 6.0) * (k1_ur + 2.0 * k2_ur + 2.0 * k3_ur + k4_ur)
+    particles.ur = ur_over_A0 + (dt / 6.0) * (
+        k1_ur_over_A
+        + 2.0 * k2_ur_over_A
+        + 2.0 * k3_ur_over_A
+        + k4_ur_over_A
+    )
     particles.uphi = uphi0
-
 
     return particles
 

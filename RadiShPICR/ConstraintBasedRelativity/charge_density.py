@@ -10,9 +10,10 @@ def charge_density_at_point(
     grid,
     shape_mode=None,
 ):
-    r_particle, _ = particles.get_positions()
+    rs, _ = particles.get_positions()
     particle_shape = particles.get_shape() if shape_mode is None else shape_mode
     dr = grid.dr
+    r_particle = rs / A_at_point
 
     weights = shape_weights_at_point(
         r_particle,

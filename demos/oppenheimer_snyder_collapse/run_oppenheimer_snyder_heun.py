@@ -236,15 +236,8 @@ def initialize_oppenheimer_snyder_particles(
 
     particle_areal_radius = np.concatenate(particle_areal_radius)
     particle_weight = np.concatenate(particle_weight)
-    particle_isotropic_radius = isotropic_radius_from_areal(
-        particle_areal_radius,
-        total_mass,
-        surface_areal_radius,
-    )
-    particle_solver_radius = particle_isotropic_radius / initial_X_r
-
     particle_mass = jnp.ones((total_particles,))
-    particle_ur = jnp.zeros((total_particles,))
+    particle_ur_over_A = jnp.zeros((total_particles,))
     particle_phi = jnp.zeros((total_particles,))
     particle_uphi = jnp.zeros((total_particles,))
 
@@ -253,8 +246,10 @@ def initialize_oppenheimer_snyder_particles(
         charge=0.0,
         mass=particle_mass,
         weight=jnp.asarray(particle_weight),
-        r=jnp.asarray(particle_solver_radius),
-        ur=particle_ur,
+        # ConstraintBasedRelativity stores r_s and u_r / A in the shared
+        # particle class fields r and ur.
+        r=jnp.asarray(particle_areal_radius),
+        ur=particle_ur_over_A,
         phi=particle_phi,
         uphi=particle_uphi,
         shape_mode=shape_mode,
@@ -381,7 +376,7 @@ def schwarzschild_lapse(U_state):
     return alpha / X_t
 
 
-def solver_state_is_acceptable(U_state):
+def solver_state_is_acceptable(U_state, particles):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r_grid = U_state
     mass_density, charge_density, Srr, Sr = source_terms
     solver_arrays = (
@@ -404,9 +399,26 @@ def solver_state_is_acceptable(U_state):
     )
     diagnostic_alpha = np.asarray(schwarzschild_lapse(U_state))
     finite_state = finite_state and np.all(np.isfinite(diagnostic_alpha))
+    particle_arrays = (
+        particles.r,
+        particles.ur,
+        particles.phi,
+        particles.uphi,
+        particles.weight,
+    )
+    finite_state = finite_state and all(
+        np.all(np.isfinite(np.asarray(values)))
+        for values in particle_arrays
+    )
+    particle_rs = np.asarray(particles.r)
+    rs_grid = np.asarray(A * r_grid)
+    particles_in_domain = (
+        np.all(particle_rs >= rs_grid[0])
+        and np.all(particle_rs <= rs_grid[-1])
+    )
     minimum_alpha = float(np.min(diagnostic_alpha))
 
-    return finite_state and minimum_alpha > 0.0
+    return finite_state and particles_in_domain and minimum_alpha > 0.0
 
 
 def write_schwarzschild_snapshot(
@@ -447,8 +459,8 @@ def write_schwarzschild_snapshot(
     )
     np.savez_compressed(
         phase_space_path,
-        r=np.asarray(diagnostic_particles.r),
-        ur=np.asarray(diagnostic_particles.ur),
+        rs=np.asarray(diagnostic_particles.r),
+        ur_over_A=np.asarray(diagnostic_particles.ur),
         weight=np.asarray(diagnostic_particles.weight),
         step=int(step),
         time=float(schwarzschild_time),
@@ -510,7 +522,7 @@ with tqdm(
                 trial_dt,
             )
 
-            if not solver_state_is_acceptable(trial_U_state):
+            if not solver_state_is_acceptable(trial_U_state, trial_particles):
                 trial_dt *= 0.5
                 continue
 
