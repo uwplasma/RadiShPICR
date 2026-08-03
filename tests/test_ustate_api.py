@@ -462,7 +462,13 @@ def test_particle_derivatives_keep_stored_lapse_freezing_variables(monkeypatch):
     force_particles = []
     electromagnetic_terms = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         metric_particles.append(stage_particles)
         return make_metric_result(r_grid)
 
@@ -818,7 +824,13 @@ def test_step_updates_current_particle_class_in_place_and_preserves_uphi():
 
 
 def test_step_reflects_lapse_freezing_state_after_center_crossing(monkeypatch):
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         return make_metric_result(r_grid)
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
@@ -869,9 +881,19 @@ def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
     monkeypatch,
 ):
     metric_stage_positions = []
+    metric_previous_X_r = []
+    metric_previous_X_t = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         metric_stage_positions.append(stage_particles.r.copy())
+        metric_previous_X_r.append(previous_X_r)
+        metric_previous_X_t.append(previous_X_t)
         return make_metric_result(r_grid)
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
@@ -902,7 +924,10 @@ def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
 
     particles = make_species()
     r_grid = jnp.linspace(0.0, 1.0, 5)
-    initial_metric = make_metric_result(r_grid)
+    initial_metric = list(make_metric_result(r_grid))
+    initial_metric[0] = jnp.full_like(r_grid, 0.5)
+    initial_metric[2] = jnp.full_like(r_grid, 0.25)
+    initial_metric = tuple(initial_metric)
 
     updated_particles, final_metric = step_rk4_with_metric(
         particles,
@@ -914,6 +939,8 @@ def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
 
     assert updated_particles is particles
     assert len(metric_stage_positions) == 4
+    assert jnp.allclose(jnp.asarray(metric_previous_X_r), 2.0)
+    assert jnp.allclose(jnp.asarray(metric_previous_X_t), 4.0)
     assert jnp.allclose(metric_stage_positions[-1], updated_particles.r)
     assert jnp.allclose(final_metric[-1], r_grid)
 
@@ -981,7 +1008,13 @@ def test_step_rk4_with_metric_matches_existing_multistep_path():
 def test_step_rk4_updates_current_particle_class_in_place_and_preserves_uphi(monkeypatch):
     calls = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         calls.append(stage_particles.r.copy())
         return make_metric_result(r_grid)
 
@@ -1023,7 +1056,13 @@ def test_step_rk4_recomputes_stage_specific_metric_and_em_field(monkeypatch):
     geodesic_Er_values = []
     lorentz_Er_values = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         stage_number = len(metric_stage_positions) + 1
         metric_stage_positions.append(stage_particles.r.copy())
         Er = jnp.full_like(r_grid, float(stage_number))
@@ -1069,7 +1108,13 @@ def test_step_rk4_recomputes_stage_specific_metric_and_em_field(monkeypatch):
 def test_step_rk4_reflects_center_crossing_before_stage_metric_solves(monkeypatch):
     metric_stage_positions = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         metric_stage_positions.append(stage_particles.r.copy())
         return make_metric_result(r_grid)
 
@@ -1119,7 +1164,13 @@ def test_step_rk4_reflects_center_crossing_before_stage_metric_solves(monkeypatc
 def test_step_rk4_does_not_freeze_zero_uphi_particle_at_center(monkeypatch):
     metric_stage_positions = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         metric_stage_positions.append(stage_particles.r.copy())
         return make_metric_result(r_grid)
 
@@ -1169,7 +1220,13 @@ def test_step_rk4_does_not_freeze_zero_uphi_particle_at_center(monkeypatch):
 def test_step_rk4_uses_classic_weighted_derivative_combination(monkeypatch):
     derivative_calls = []
 
-    def fake_calculate_metric(stage_particles, r_grid, dr):
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
         return make_metric_result(r_grid)
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):

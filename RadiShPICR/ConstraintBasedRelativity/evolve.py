@@ -34,10 +34,26 @@ def _copy_particle_state(particles, rs, phi, ur_over_A):
     return stage_particles
 
 
-def _particle_derivatives(particles, r_grid, dr, U_state=None):
+def _particle_derivatives(
+    particles,
+    r_grid,
+    dr,
+    U_state=None,
+    previous_X_t=None,
+    previous_X_r=None,
+):
 
     if U_state is None:
-        U_state = calculate_metric(particles, r_grid, dr)
+        if previous_X_t is None:
+            U_state = calculate_metric(particles, r_grid, dr)
+        else:
+            U_state = calculate_metric(
+                particles,
+                r_grid,
+                dr,
+                previous_X_t=previous_X_t,
+                previous_X_r=previous_X_r,
+            )
 
     dur_dt_EM = compute_lorentz_terms(particles, U_state)
     return compute_geodesic_terms(
@@ -52,6 +68,14 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
     ur_over_A0 = particles.ur
     phi0 = particles.phi
     uphi0 = particles.uphi
+
+    if initial_U_state is None:
+        initial_U_state = calculate_metric(particles, r_grid, dr)
+
+    # Every two-shot solve starts with A(0) = alpha(0) = 1.  The accepted
+    # origins therefore store the retained rescaling factors as their inverses.
+    previous_X_r = 1.0 / initial_U_state[0][0]
+    previous_X_t = 1.0 / initial_U_state[2][0]
 
     k1_rs, k1_phi, k1_ur_over_A = _particle_derivatives(
         particles,
@@ -70,6 +94,8 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
         stage2,
         r_grid,
         dr,
+        previous_X_t=previous_X_t,
+        previous_X_r=previous_X_r,
     )
 
     stage3 = _copy_particle_state(
@@ -82,6 +108,8 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
         stage3,
         r_grid,
         dr,
+        previous_X_t=previous_X_t,
+        previous_X_r=previous_X_r,
     )
 
     stage4 = _copy_particle_state(
@@ -94,6 +122,8 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
         stage4,
         r_grid,
         dr,
+        previous_X_t=previous_X_t,
+        previous_X_r=previous_X_r,
     )
 
     particles.r = rs0 + (dt / 6.0) * (
@@ -127,6 +157,14 @@ def step_rk4_with_metric(particles, U_state, r_grid, dr, dt):
         dt,
         initial_U_state=U_state,
     )
-    U_state_next = calculate_metric(particles, r_grid, dr)
+    previous_X_r = 1.0 / U_state[0][0]
+    previous_X_t = 1.0 / U_state[2][0]
+    U_state_next = calculate_metric(
+        particles,
+        r_grid,
+        dr,
+        previous_X_t=previous_X_t,
+        previous_X_r=previous_X_r,
+    )
 
     return particles, U_state_next

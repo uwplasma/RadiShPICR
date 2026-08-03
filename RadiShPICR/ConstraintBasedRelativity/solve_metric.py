@@ -438,8 +438,19 @@ def _integrate_metric_from_origin(
     return U_state
 
 
-def calculate_metric(particles, r_grid, dr):
-    """Solve the radial constraints with two vacuum-rescaled Heun shots."""
+def calculate_metric(
+    particles,
+    r_grid,
+    dr,
+    previous_X_t=None,
+    previous_X_r=None,
+):
+    """Solve the radial constraints with two vacuum-rescaled Heun shots.
+
+    The origin rescaling is updated as one pair: a new ``(X_r, X_t)`` only
+    replaces the retained pair when its ``X_t`` exceeds the value from the
+    previous accepted metric state.
+    """
 
     r_grid = jnp.asarray(r_grid)
     dr = jnp.asarray(dr, dtype=r_grid.dtype)
@@ -467,8 +478,18 @@ def calculate_metric(particles, r_grid, dr):
         total_particle_charge(particles),
     )
 
-    center_A = trial_A[0] / X_r
-    center_alpha = trial_alpha[0] / X_t
+    if previous_X_t is None:
+        origin_X_r = X_r
+        origin_X_t = X_t
+    else:
+        previous_X_r = jnp.asarray(previous_X_r, dtype=r_grid.dtype)
+        previous_X_t = jnp.asarray(previous_X_t, dtype=r_grid.dtype)
+        use_new_rescaling = X_t > previous_X_t
+        origin_X_r = jnp.where(use_new_rescaling, X_r, previous_X_r)
+        origin_X_t = jnp.where(use_new_rescaling, X_t, previous_X_t)
+
+    center_A = trial_A[0] / origin_X_r
+    center_alpha = trial_alpha[0] / origin_X_t
 
     return _integrate_metric_from_origin(
         particles,

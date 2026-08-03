@@ -5,7 +5,7 @@ import RadiShPICR.ConstraintBasedRelativity.solve_metric as solve_metric
 from RadiShPICR.particles import particle_species
 
 
-def test_calculate_metric_uses_rescaled_origin_for_second_heun_shot(monkeypatch):
+def test_calculate_metric_uses_new_rescaling_when_X_t_increases(monkeypatch):
     particles = particle_species(
         name="charged",
         charge=1.5,
@@ -61,6 +61,8 @@ def test_calculate_metric_uses_rescaled_origin_for_second_heun_shot(monkeypatch)
         particles,
         r_grid,
         r_grid[1] - r_grid[0],
+        previous_X_t=jnp.asarray(3.0),
+        previous_X_r=jnp.asarray(5.0),
     )
 
     assert len(shot_centers) == 2
@@ -78,6 +80,69 @@ def test_calculate_metric_uses_rescaled_origin_for_second_heun_shot(monkeypatch)
     assert jnp.allclose(charge, 2.25)
 
     assert jnp.allclose(U_state[0][0], 0.5)
+    assert jnp.allclose(U_state[2][0], 0.25)
+
+
+def test_calculate_metric_keeps_previous_rescaling_when_X_t_decreases(
+    monkeypatch,
+):
+    particles = particle_species(
+        name="neutral",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.5]),
+        ur=jnp.zeros(1),
+        phi=jnp.zeros(1),
+        uphi=jnp.zeros(1),
+        shape_mode="nearest",
+    )
+    r_grid = jnp.asarray([0.0, 1.0, 2.0])
+    shot_centers = []
+
+    def fake_heun_shot(particles, grid, center_A, center_alpha):
+        shot_centers.append((center_A, center_alpha))
+
+        values = jnp.ones_like(grid.r_full)
+        zeros = jnp.zeros_like(grid.r_full)
+        source_terms = (zeros, zeros, zeros, zeros)
+        A = values.at[0].set(center_A)
+        alpha = values.at[0].set(center_alpha)
+
+        return (
+            A,
+            zeros,
+            alpha,
+            zeros,
+            zeros,
+            zeros,
+            source_terms,
+            grid.r_full,
+        )
+
+    monkeypatch.setattr(
+        solve_metric,
+        "_integrate_metric_from_origin",
+        fake_heun_shot,
+    )
+    monkeypatch.setattr(
+        solve_metric,
+        "vacuum_rescale_factors",
+        lambda *args: (jnp.asarray(1.0), jnp.asarray(2.0)),
+    )
+
+    U_state = solve_metric.calculate_metric(
+        particles,
+        r_grid,
+        r_grid[1] - r_grid[0],
+        previous_X_t=jnp.asarray(4.0),
+        previous_X_r=jnp.asarray(3.0),
+    )
+
+    assert len(shot_centers) == 2
+    assert jnp.allclose(shot_centers[1][0], 1.0 / 3.0)
+    assert jnp.allclose(shot_centers[1][1], 0.25)
+    assert jnp.allclose(U_state[0][0], 1.0 / 3.0)
     assert jnp.allclose(U_state[2][0], 0.25)
 
 
