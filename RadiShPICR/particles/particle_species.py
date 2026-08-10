@@ -4,6 +4,13 @@ from jax.tree_util import register_pytree_node_class
 
 @register_pytree_node_class
 class particle_species:
+    """Particle species with positions and physical covariant momenta.
+
+    ``ur`` and ``uphi`` store the spatial covariant components ``u_r`` and
+    ``u_phi``.  They are not coordinate velocities or conformally lowered
+    momenta.
+    """
+
     def __init__(self, name, charge, mass, weight, r, ur, phi, uphi, shape_mode):
         self.name = name
         self.charges = charge
@@ -20,6 +27,8 @@ class particle_species:
         return self.r, self.phi
     
     def get_velocities(self):
+        """Return the physical covariant spatial momenta ``(u_r, u_phi)``."""
+
         return self.ur, self.uphi
     
     def get_mass(self):

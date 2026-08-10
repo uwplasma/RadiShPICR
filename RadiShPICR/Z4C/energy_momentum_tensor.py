@@ -3,6 +3,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
+from RadiShPICR.ConstraintBasedRelativity.utils import safe_radius
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles.particle_shapes import (
@@ -10,7 +11,16 @@ from RadiShPICR.particles.particle_shapes import (
     unbounded_radial_shape_stencil,
 )
 
+
 class MatterTerms(NamedTuple):
+    """Eulerian matter sources used by the spherical Z4C equations.
+
+    ``Srr`` is the covariant radial stress ``S_rr`` and ``Stt`` is the
+    shell-averaged tangential stress ``S_theta_theta / r**2``.  ``Sr`` is the
+    contravariant radial momentum density ``S^r``.  Spherical symmetry leaves
+    the tangential momentum density ``St`` equal to zero.
+    """
+
     rho: jnp.ndarray
     # energy density
     Srr: jnp.ndarray
@@ -62,14 +72,16 @@ def _radial_matter_deposition_data(particles, metric):
         grid,
         shape_mode=particle_shape,
     )
+    safe_r_particle = safe_radius(r_particle, 0.5 * metric.dr)
+    gamma_rr_inv_p = 1.0 / grr_p
 
     particle_volume_element = (
         4.0 * jnp.pi * r_particle**2 * scaling_factor_p
     )
     lorentz_factor = jnp.sqrt(
         1.0
-        + ur**2 / grr_p
-        + uphi**2 / (r_particle**2 * gt_p)
+        + gamma_rr_inv_p * ur**2
+        + uphi**2 / (safe_r_particle**2 * gt_p)
     )
     particle_mass = particles.get_mass()
 
@@ -83,13 +95,29 @@ def _radial_matter_deposition_data(particles, metric):
     Srr_contribution = (
         particle_mass * ur**2 / (particle_volume_element * lorentz_factor)
     )
-    Sr_contribution = particle_mass * ur / particle_volume_element
+    Stt_contribution = (
+        particle_mass
+        * uphi**2
+        / (
+            2.0
+            * safe_r_particle**2
+            * particle_volume_element
+            * lorentz_factor
+        )
+    )
+    Sr_contribution = (
+        particle_mass
+        * gamma_rr_inv_p
+        * ur
+        / particle_volume_element
+    )
 
     return (
         indices,
         weights,
         rho_contribution,
         Srr_contribution,
+        Stt_contribution,
         Sr_contribution,
     )
 
@@ -108,10 +136,10 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
         weights,
         rho_contribution,
         Srr_contribution,
+        Stt_contribution,
         Sr_contribution,
     ) = _radial_matter_deposition_data(particles, metric)
 
-    zeros = jnp.zeros_like(metric.r)
     rho = _deposit_radial_particle_quantity(
         indices,
         weights,
@@ -124,6 +152,12 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
         Srr_contribution,
         metric.r,
     )
+    Stt = _deposit_radial_particle_quantity(
+        indices,
+        weights,
+        Stt_contribution,
+        metric.r,
+    )
     Sr = _deposit_radial_particle_quantity(
         indices,
         weights,
@@ -134,14 +168,14 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
     return MatterTerms(
         rho=rho,
         Srr=Srr,
-        Stt=jnp.zeros_like(rho),
+        Stt=Stt,
         Sr=Sr,
         St=jnp.zeros_like(rho),
     )
 
 
 def relativistic_mass_energy_density(particles, metric: Z4C_Metric):
-    indices, weights, rho_contribution, _, _ = (
+    indices, weights, rho_contribution, _, _, _ = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
@@ -153,7 +187,7 @@ def relativistic_mass_energy_density(particles, metric: Z4C_Metric):
 
 
 def compute_radial_momentum_density(particles, metric: Z4C_Metric):
-    indices, weights, _, _, Sr_contribution = (
+    indices, weights, _, _, _, Sr_contribution = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
@@ -163,8 +197,9 @@ def compute_radial_momentum_density(particles, metric: Z4C_Metric):
         metric.r,
     )
 
+
 def compute_radial_stress_tensor_component(particles, metric: Z4C_Metric):
-    indices, weights, _, Srr_contribution, _ = (
+    indices, weights, _, Srr_contribution, _, _ = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
@@ -173,8 +208,6 @@ def compute_radial_stress_tensor_component(particles, metric: Z4C_Metric):
         Srr_contribution,
         metric.r,
     )
-
-
 
 
 def compute_hamiltonian_constraint(metric: Z4C_Metric):

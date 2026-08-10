@@ -29,7 +29,7 @@ def dKhdt(metric: Z4C_Metric, matter_terms):
     d2alphadr2 = second_derivative(alpha, metric.dr, parity=1)
     # compute derivatives of the metric functions using finite difference methods
 
-    St = matter_terms.St
+    Stt = matter_terms.Stt
     Srr = matter_terms.Srr
     rho = matter_terms.rho
     # unpack the matter terms
@@ -53,7 +53,7 @@ def dKhdt(metric: Z4C_Metric, matter_terms):
     dKhdt += (1 / 3) * alpha * (Kh ** 2)
     dKhdt += 4 * jnp.pi * alpha * rho
     dKhdt += (4 * jnp.pi * alpha * Srr * chi) / grr
-    dKhdt += (8 * jnp.pi * alpha * St * chi) / gt
+    dKhdt += (8 * jnp.pi * alpha * Stt * chi) / gt
     dKhdt += -(2 * chi * dalphadr) / (metric.r * grr)
     dKhdt += (chi * dgrrdr * dalphadr) / (2 * (grr ** 2))
     dKhdt += -(chi * dgtdr * dalphadr) / (grr * gt)
@@ -107,7 +107,7 @@ def dArrdt(metric: Z4C_Metric, matter_terms):
     d2alphadr2 = second_derivative(alpha, metric.dr, parity=1)
     # compute derivatives of the metric functions using finite difference methods
 
-    St = matter_terms.St
+    Stt = matter_terms.Stt
     Srr = matter_terms.Srr
     # unpack the matter terms
 
@@ -169,7 +169,7 @@ def dArrdt(metric: Z4C_Metric, matter_terms):
     dArrdt += (4 * (grr ** 2) * alpha * chi) / (3 * metric.r ** 2 * (gt ** 2))
     dArrdt += -(2 * grr * alpha * chi) / (3 * (metric.r ** 2) * gt)
     dArrdt += -(16 / 3) * jnp.pi * alpha * Srr * chi
-    dArrdt += (16 * jnp.pi * grr * alpha * St * chi) / (3 * gt)
+    dArrdt += (16 * jnp.pi * grr * alpha * Stt * chi) / (3 * gt)
     dArrdt += -(2 * (grr ** 2) * alpha * metric.Gamma * chi) / (3 * metric.r * gt)
     dArrdt += (2 / 3) * beta * dArrdr
     dArrdt += -(2 * grr * beta * dAtdr) / (3 * gt)
@@ -246,7 +246,7 @@ def dAtdt(metric: Z4C_Metric, matter_terms):
     dArrdr = first_derivative(Arr, metric.dr, parity=1)
     # compute derivatives of the metric functions using finite difference methods
 
-    St = matter_terms.St
+    Stt = matter_terms.Stt
     Srr = matter_terms.Srr
     # unpack the matter terms
 
@@ -304,7 +304,7 @@ def dAtdt(metric: Z4C_Metric, matter_terms):
     dAtdt += -(2 * grr * alpha * chi) / (3 * (metric.r ** 2) * gt)
     dAtdt += (gt * alpha * chi) / (3 * (metric.r ** 2) * grr)
     dAtdt += (8 * jnp.pi * gt * alpha * Srr * chi) / (3 * grr)
-    dAtdt += -(8 / 3) * jnp.pi * alpha * St * chi
+    dAtdt += -(8 / 3) * jnp.pi * alpha * Stt * chi
     dAtdt += (grr * alpha * Gamma * chi) / (3 * metric.r)
     dAtdt += -(gt * beta * dArrdr) / (3 * grr)
     dAtdt += (1 / 3) * beta * dAtdr
