@@ -266,7 +266,11 @@ def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
     particles = _make_particles()
     stage_metrics = []
 
-    def fake_compute_geodesic_terms(stage_particles, stage_metric):
+    def fake_compute_geodesic_terms(
+        stage_particles,
+        stage_metric,
+        stage_metric_derivative,
+    ):
         stage_metrics.append(stage_metric)
         particle_zeros = jnp.zeros_like(stage_particles.r)
 
@@ -321,7 +325,7 @@ def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
     _assert_algebraic_constraints(updated_metric)
 
 
-def test_particles_rk4_step_updates_particles_and_reflects_origin(monkeypatch):
+def test_particles_rk4_step_keeps_unrestricted_lapse_freezing_state(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     r = jnp.linspace(0.1, 1.0, 8)
@@ -329,7 +333,11 @@ def test_particles_rk4_step_updates_particles_and_reflects_origin(monkeypatch):
     particles = _make_particles()
     dt = 0.1
 
-    def fake_compute_geodesic_terms(stage_particles, stage_metric):
+    def fake_compute_geodesic_terms(
+        stage_particles,
+        stage_metric,
+        stage_metric_derivative,
+    ):
         du_r_dt = jnp.ones_like(stage_particles.ur)
         du_phi_dt = jnp.full_like(stage_particles.uphi, 10.0)
         dr_dt = jnp.asarray([-4.0, 2.0])
@@ -361,19 +369,13 @@ def test_particles_rk4_step_updates_particles_and_reflects_origin(monkeypatch):
     updated_particles, updated_metric = time_evolve.particles_rk4_step(particles, metric, dt)
 
     expected_r = r0 + dt * jnp.asarray([-4.0, 2.0])
-    crossed_origin = expected_r < 0.0
     expected_ur = ur0 + dt
 
     assert updated_particles is particles
-    assert jnp.allclose(
-        updated_particles.r,
-        jnp.where(crossed_origin, -expected_r, expected_r),
-    )
+    assert jnp.allclose(updated_particles.r, expected_r)
+    assert updated_particles.r[0] < 0.0
     assert jnp.allclose(updated_particles.phi, phi0 - dt)
-    assert jnp.allclose(
-        updated_particles.ur,
-        jnp.where(crossed_origin, -expected_ur, expected_ur),
-    )
+    assert jnp.allclose(updated_particles.ur, expected_ur)
     assert jnp.allclose(updated_particles.uphi, uphi0 + 10.0 * dt)
     assert jnp.allclose(updated_metric.alpha, metric.alpha + dt)
 
@@ -387,9 +389,15 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
     dt = 0.2
     matter_stage_positions = []
     derivative_stage_rho = []
+    geodesic_stage = []
 
-    def fake_compute_geodesic_terms(stage_particles, stage_metric):
-        stage_number = len(matter_stage_positions) + 1.0
+    def fake_compute_geodesic_terms(
+        stage_particles,
+        stage_metric,
+        stage_metric_derivative,
+    ):
+        stage_number = len(geodesic_stage) + 1.0
+        geodesic_stage.append(stage_number)
         du_r_dt = jnp.full_like(stage_particles.ur, stage_number)
         du_phi_dt = jnp.zeros_like(stage_particles.uphi)
         dr_dt = jnp.full_like(stage_particles.r, stage_number)

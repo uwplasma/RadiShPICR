@@ -877,6 +877,19 @@ def test_step_rk4_imports_as_additional_timestep_option():
     assert callable(step_rk4_with_metric)
 
 
+def test_periodic_radius_wraps_both_directions_under_jit():
+    radii = jnp.asarray([-2.25, -1.0, 0.0, 1.0, 3.25])
+    expected = jnp.asarray([0.75, 0.0, 0.0, 0.0, 0.25])
+
+    eager = constraint_evolve._periodic_radius(radii, 1.0)
+    compiled = jax.jit(
+        lambda values: constraint_evolve._periodic_radius(values, 1.0)
+    )(radii)
+
+    assert jnp.allclose(eager, expected)
+    assert jnp.allclose(compiled, expected)
+
+
 def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
     monkeypatch,
 ):
@@ -943,6 +956,86 @@ def test_step_rk4_with_metric_reuses_initial_metric_and_returns_final_metric(
     assert jnp.allclose(jnp.asarray(metric_previous_X_t), 4.0)
     assert jnp.allclose(metric_stage_positions[-1], updated_particles.r)
     assert jnp.allclose(final_metric[-1], r_grid)
+
+
+def test_step_rk4_with_metric_wraps_every_periodic_radial_stage(monkeypatch):
+    derivative_stage_positions = []
+    metric_stage_positions = []
+
+    def fake_calculate_metric(
+        stage_particles,
+        r_grid,
+        dr,
+        previous_X_t=1.0,
+        previous_X_r=1.0,
+    ):
+        metric_stage_positions.append(stage_particles.r.copy())
+        return make_metric_result(r_grid)
+
+    def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
+        derivative_stage_positions.append(stage_particles.r.copy())
+        return (
+            jnp.asarray([1.0, -1.0]),
+            jnp.zeros_like(stage_particles.phi),
+            jnp.zeros_like(stage_particles.ur),
+        )
+
+    def fake_lorentz_terms(stage_particles, U_state):
+        return jnp.zeros_like(stage_particles.ur)
+
+    monkeypatch.setattr(
+        constraint_evolve,
+        "calculate_metric",
+        fake_calculate_metric,
+    )
+    monkeypatch.setattr(
+        constraint_evolve,
+        "compute_geodesic_terms",
+        fake_geodesic_terms,
+    )
+    monkeypatch.setattr(
+        constraint_evolve,
+        "compute_lorentz_terms",
+        fake_lorentz_terms,
+    )
+
+    particles = make_species()
+    particles.r = jnp.asarray([0.95, 0.05])
+    initial_ur = particles.ur.copy()
+    initial_uphi = particles.uphi.copy()
+    initial_weight = particles.weight.copy()
+    initial_charges = particles.charges
+    initial_masses = particles.masses
+    r_grid = jnp.linspace(0.0, 1.0, 5)
+
+    updated_particles, _ = step_rk4_with_metric(
+        particles,
+        make_metric_result(r_grid),
+        r_grid,
+        r_grid[1] - r_grid[0],
+        dt=0.2,
+        radial_period=1.0,
+    )
+
+    expected_derivative_positions = jnp.asarray(
+        [
+            [0.95, 0.05],
+            [0.05, 0.95],
+            [0.05, 0.95],
+            [0.15, 0.85],
+        ]
+    )
+    assert jnp.allclose(
+        jnp.asarray(derivative_stage_positions),
+        expected_derivative_positions,
+    )
+    assert jnp.allclose(updated_particles.r, jnp.asarray([0.15, 0.85]))
+    assert jnp.allclose(updated_particles.ur, initial_ur)
+    assert jnp.allclose(updated_particles.uphi, initial_uphi)
+    assert jnp.allclose(updated_particles.weight, initial_weight)
+    assert jnp.allclose(updated_particles.charges, initial_charges)
+    assert jnp.allclose(updated_particles.masses, initial_masses)
+    assert jnp.allclose(metric_stage_positions[-1], updated_particles.r)
 
 
 def test_step_rk4_with_metric_matches_existing_multistep_path():

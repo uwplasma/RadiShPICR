@@ -111,6 +111,24 @@ def _angular_geodesic_terms(
     )
 
 
+def _angular_lorentz_term(uphi, r_particle, chi_p, conformal_gt_p):
+    """Return the angular contribution to ``gamma**2`` at each particle."""
+
+    def angular_term_at_particle(uphi_p, r_p, chi_at_p, gt_at_p):
+        return jax.lax.cond(
+            uphi_p == 0.0,
+            lambda: jnp.zeros_like(uphi_p),
+            lambda: chi_at_p * uphi_p**2 / (r_p**2 * gt_at_p),
+        )
+
+    return jax.vmap(angular_term_at_particle)(
+        uphi,
+        r_particle,
+        chi_p,
+        conformal_gt_p,
+    )
+
+
 def compute_normal_geodesic_terms(particles, metric: Z4C_Metric):
     """Evaluate the Z4c geodesic RHS in ordinary ``(r, u_r)`` variables."""
 
@@ -176,14 +194,7 @@ def _normal_geodesic_terms(particles, metric, r_particle, ur):
         - chi_p * dgrrdr_p / conformal_grr_p**2
     )
 
-    def angular_lorentz_term(uphi_p, r_p, chi_at_p, gt_at_p):
-        return jax.lax.cond(
-            uphi_p == 0.0,
-            lambda: jnp.zeros_like(uphi_p),
-            lambda: chi_at_p * uphi_p**2 / (r_p**2 * gt_at_p),
-        )
-
-    angular_lorentz = jax.vmap(angular_lorentz_term)(
+    angular_lorentz = _angular_lorentz_term(
         uphi,
         r_particle,
         chi_p,
@@ -214,19 +225,121 @@ def _normal_geodesic_terms(particles, metric, r_particle, ur):
     return du_r_dt, du_phi_dt, dr_dt, dphi_dt
 
 
+def _explicit_lapse_freezing_rhs(
+    rs,
+    ubar,
+    uphi,
+    r_particle,
+    ur,
+    du_r_dt,
+    alpha_p,
+    beta_p,
+    chi_p,
+    conformal_grr_p,
+    conformal_gt_p,
+    dchidr_p,
+    dgrrdr_p,
+    dchidt_p,
+    dgrrdt_p,
+):
+    """Evaluate the shift-aware ``rs`` and ``ubar`` notebook expressions."""
+
+    gamma_rr_inv_p = chi_p / conformal_grr_p
+    angular_lorentz = _angular_lorentz_term(
+        uphi,
+        r_particle,
+        chi_p,
+        conformal_gt_p,
+    )
+    lorentz_factor = jnp.sqrt(
+        1.0 + gamma_rr_inv_p * ur**2 + angular_lorentz
+    )
+
+    sqrt_grr_over_chi = jnp.sqrt(conformal_grr_p / chi_p)
+    coordinate_factor = (
+        4.0 * chi_p - 3.0 * chi_p**(3.0 / 4.0) * dchidr_p * rs
+    )
+
+    drs_dt = (
+        alpha_p * coordinate_factor * ubar
+        + sqrt_grr_over_chi
+        * (
+            -3.0 * chi_p**(3.0 / 4.0) * dchidt_p * rs
+            - beta_p * coordinate_factor
+        )
+        * lorentz_factor
+    ) / (
+        4.0
+        * chi_p**(7.0 / 4.0)
+        * sqrt_grr_over_chi
+        * lorentz_factor
+    )
+
+    conformal_metric_term = ubar * (
+        -4.0 * chi_p * dgrrdr_p * alpha_p * ubar
+        + (
+            4.0 * beta_p * chi_p * dgrrdr_p
+            - 4.0 * chi_p * dgrrdt_p
+        )
+        * sqrt_grr_over_chi
+        * lorentz_factor
+    )
+    momentum_term = (
+        4.0
+        * dchidt_p
+        * sqrt_grr_over_chi
+        * ubar
+        * lorentz_factor
+        + 8.0 * chi_p * du_r_dt * lorentz_factor
+        + 6.0
+        * chi_p**(3.0 / 4.0)
+        * dchidr_p
+        * rs
+        * du_r_dt
+        * lorentz_factor
+        + dchidr_p
+        * (
+            4.0 * alpha_p * ubar**2
+            - 4.0
+            * beta_p
+            * sqrt_grr_over_chi
+            * ubar
+            * lorentz_factor
+            - 6.0
+            * chi_p**(3.0 / 4.0)
+            * rs
+            * du_r_dt
+            * lorentz_factor
+        )
+    )
+
+    dubar_dt = (
+        conformal_metric_term + conformal_grr_p * momentum_term
+    ) / (
+        8.0
+        * chi_p
+        * conformal_grr_p
+        * sqrt_grr_over_chi
+        * lorentz_factor
+    )
+
+    return dubar_dt, drs_dt
+
+
 def compute_geodesic_terms(
     particles,
     metric: Z4C_Metric,
     metric_derivative: Z4C_Metric,
 ):
-    """Evaluate the particle RHS for stored lapse-freezing variables."""
+    """Evaluate the explicit notebook RHS for lapse-freezing variables."""
 
-    ubar, _ = particles.get_velocities()
+    rs, _ = particles.get_positions()
+    ubar, uphi = particles.get_velocities()
     particle_shape = particles.get_shape()
     grid = _radial_grid_from_metric(metric)
 
     r_particle, ur = normal_particle_state(particles, metric)
-    du_r_dt, du_phi_dt, dr_dt, dphi_dt = _normal_geodesic_terms(
+    du_r_dt, du_phi_dt, _, dphi_dt = _normal_geodesic_terms(
         particles,
         metric,
         r_particle,
@@ -234,8 +347,11 @@ def compute_geodesic_terms(
     )
 
     (
+        alpha_p,
+        beta_p,
         chi_p,
         conformal_grr_p,
+        conformal_gt_p,
         dchidr_p,
         dgrrdr_p,
         dchidt_p,
@@ -243,8 +359,11 @@ def compute_geodesic_terms(
     ) = interpolate_fields_to_particles(
         jnp.stack(
             (
+                metric.alpha,
+                metric.beta,
                 metric.chi,
                 metric.conformal_grr,
+                metric.conformal_gt,
                 first_derivative(metric.chi, metric.dr, parity=1),
                 first_derivative(
                     metric.conformal_grr,
@@ -260,20 +379,23 @@ def compute_geodesic_terms(
         shape_mode=particle_shape,
     )
 
-    total_dchi_dt = dchidt_p + dchidr_p * dr_dt
-    total_dgrr_dt = dgrrdt_p + dgrrdr_p * dr_dt
-
-    drs_dt = dr_dt / chi_p**(3.0 / 4.0)
-    drs_dt -= (
-        3.0
-        * r_particle
-        * total_dchi_dt
-        / (4.0 * chi_p**(7.0 / 4.0))
-    )
-
-    dubar_dt = jnp.sqrt(chi_p / conformal_grr_p) * du_r_dt
-    dubar_dt += 0.5 * ubar * (
-        total_dchi_dt / chi_p - total_dgrr_dt / conformal_grr_p
+    # Explicit shift-aware equations generated in LapseFreezingZ4C.nb.
+    dubar_dt, drs_dt = _explicit_lapse_freezing_rhs(
+        rs,
+        ubar,
+        uphi,
+        r_particle,
+        ur,
+        du_r_dt,
+        alpha_p,
+        beta_p,
+        chi_p,
+        conformal_grr_p,
+        conformal_gt_p,
+        dchidr_p,
+        dgrrdr_p,
+        dchidt_p,
+        dgrrdt_p,
     )
 
     return dubar_dt, du_phi_dt, drs_dt, dphi_dt

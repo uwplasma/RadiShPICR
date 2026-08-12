@@ -16,6 +16,7 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
 )
 from RadiShPICR.Z4C.constraint_terms import dGammadt
 from RadiShPICR.Z4C.extrinsic_curvature import dArrdt, dAtdt, dKhdt
+from RadiShPICR.Z4C.geodesic import lapse_freezing_particle_state
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -84,13 +85,21 @@ def test_sparse_matter_deposition_matches_dense_reference():
     )
 
     for shape_mode in ("nearest", "linear", "quadratic"):
+        r_particle = jnp.asarray([0.75, 2.25, 5.25])
+        ur = jnp.asarray([0.4, -0.2, 0.7])
+        rs, ubar = lapse_freezing_particle_state(
+            r_particle,
+            ur,
+            metric,
+            shape_mode,
+        )
         particles = particle_species(
             name="matter",
             charge=0.0,
             mass=2.0,
             weight=jnp.asarray([0.2, 0.3, 0.5]),
-            r=jnp.asarray([0.75, 2.25, 5.25]),
-            ur=jnp.asarray([0.4, -0.2, 0.7]),
+            r=rs,
+            ur=ubar,
             phi=jnp.zeros(3),
             uphi=jnp.asarray([0.1, 0.3, -0.2]),
             shape_mode=shape_mode,
@@ -99,32 +108,31 @@ def test_sparse_matter_deposition_matches_dense_reference():
         scaling_factor = jnp.sqrt(1.0 / metric.chi**3)
         scaling_factor_p = interpolate_field_to_particles(
             scaling_factor,
-            particles.r,
+            r_particle,
             grid,
             shape_mode=shape_mode,
         )
         grr_p = interpolate_field_to_particles(
             metric.conformal_grr / metric.chi,
-            particles.r,
+            r_particle,
             grid,
             shape_mode=shape_mode,
         )
         gt_p = interpolate_field_to_particles(
             metric.conformal_gt / metric.chi,
-            particles.r,
+            r_particle,
             grid,
             shape_mode=shape_mode,
         )
-        safe_r_particle = jnp.maximum(particles.r, 0.5 * metric.dr)
-        particle_volume = 4.0 * jnp.pi * particles.r**2 * scaling_factor_p
+        particle_volume = 4.0 * jnp.pi * r_particle**2 * scaling_factor_p
         gamma_rr_inv_p = 1.0 / grr_p
         lorentz_factor = jnp.sqrt(
             1.0
-            + gamma_rr_inv_p * particles.ur**2
-            + particles.uphi**2 / (safe_r_particle**2 * gt_p)
+            + gamma_rr_inv_p * ur**2
+            + particles.uphi**2 / (r_particle**2 * gt_p)
         )
         weights = shape_weights_at_point(
-            particles.r[jnp.newaxis, :],
+            r_particle[jnp.newaxis, :],
             r[:, jnp.newaxis],
             metric.dr,
             shape_mode=shape_mode,
@@ -140,7 +148,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
         expected_Srr = jnp.sum(
             weights
             * particle_mass
-            * particles.ur**2
+            * ur**2
             / (particle_volume * lorentz_factor),
             axis=1,
         )
@@ -150,7 +158,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
             * particles.uphi**2
             / (
                 2.0
-                * safe_r_particle**2
+                * r_particle**2
                 * particle_volume
                 * lorentz_factor
             ),
@@ -160,7 +168,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
             weights
             * particle_mass
             * gamma_rr_inv_p
-            * particles.ur
+            * ur
             / particle_volume,
             axis=1,
         )
@@ -210,13 +218,21 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
         dr=r[1] - r[0],
     )
     particle_index = 2
+    r_particle = jnp.asarray([r[particle_index]])
+    ur = jnp.asarray([-0.4])
+    rs, ubar = lapse_freezing_particle_state(
+        r_particle,
+        ur,
+        metric,
+        "nearest",
+    )
     particles = particle_species(
         name="matter",
         charge=0.0,
         mass=2.0,
         weight=jnp.asarray([0.7]),
-        r=jnp.asarray([r[particle_index]]),
-        ur=jnp.asarray([-0.4]),
+        r=rs,
+        ur=ubar,
         phi=jnp.asarray([0.3]),
         uphi=jnp.asarray([0.8]),
         shape_mode="nearest",
@@ -224,12 +240,12 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
 
     matter_terms = compute_radial_matter_terms(particles, metric)
 
-    rp = particles.r[0]
+    rp = r_particle[0]
     gamma_rr_inv = chi[particle_index] / conformal_grr[particle_index]
     gamma_t_inv = chi[particle_index] / conformal_gt[particle_index]
     lorentz_factor = jnp.sqrt(
         1.0
-        + gamma_rr_inv * particles.ur[0] ** 2
+        + gamma_rr_inv * ur[0] ** 2
         + gamma_t_inv * particles.uphi[0] ** 2 / rp**2
     )
     particle_volume = 4.0 * jnp.pi * rp**2 / chi[particle_index] ** 1.5
