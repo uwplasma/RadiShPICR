@@ -1,10 +1,11 @@
 from typing import NamedTuple
 
+import jax
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.ConstraintBasedRelativity.utils import safe_radius
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
+from RadiShPICR.Z4C.geodesic import normal_particle_state
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles.particle_shapes import (
     interpolate_fields_to_particles,
@@ -53,8 +54,8 @@ def initialize_vacuum_matter_terms(metric):
 
 
 def _radial_matter_deposition_data(particles, metric):
-    r_particle, _ = particles.get_positions()
-    ur, uphi = particles.get_velocities()
+    r_particle, ur = normal_particle_state(particles, metric)
+    _, uphi = particles.get_velocities()
     particle_shape = particles.get_shape()
 
     chi = metric.chi
@@ -72,8 +73,23 @@ def _radial_matter_deposition_data(particles, metric):
         grid,
         shape_mode=particle_shape,
     )
-    safe_r_particle = safe_radius(r_particle, 0.5 * metric.dr)
     gamma_rr_inv_p = 1.0 / grr_p
+
+    def angular_matter_terms(uphi_p, r_p, gt_at_p):
+        return jax.lax.cond(
+            uphi_p == 0.0,
+            lambda: (jnp.zeros_like(uphi_p), jnp.zeros_like(uphi_p)),
+            lambda: (
+                uphi_p**2 / (r_p**2 * gt_at_p),
+                uphi_p**2 / r_p**2,
+            ),
+        )
+
+    angular_lorentz, angular_stress = jax.vmap(angular_matter_terms)(
+        uphi,
+        r_particle,
+        gt_p,
+    )
 
     particle_volume_element = (
         4.0 * jnp.pi * r_particle**2 * scaling_factor_p
@@ -81,7 +97,7 @@ def _radial_matter_deposition_data(particles, metric):
     lorentz_factor = jnp.sqrt(
         1.0
         + gamma_rr_inv_p * ur**2
-        + uphi**2 / (safe_r_particle**2 * gt_p)
+        + angular_lorentz
     )
     particle_mass = particles.get_mass()
 
@@ -95,15 +111,8 @@ def _radial_matter_deposition_data(particles, metric):
     Srr_contribution = (
         particle_mass * ur**2 / (particle_volume_element * lorentz_factor)
     )
-    Stt_contribution = (
-        particle_mass
-        * uphi**2
-        / (
-            2.0
-            * safe_r_particle**2
-            * particle_volume_element
-            * lorentz_factor
-        )
+    Stt_contribution = particle_mass * angular_stress / (
+        2.0 * particle_volume_element * lorentz_factor
     )
     Sr_contribution = (
         particle_mass

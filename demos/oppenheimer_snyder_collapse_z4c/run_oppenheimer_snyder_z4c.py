@@ -33,18 +33,23 @@ from RadiShPICR.ConstraintBasedRelativity import (
     build_radial_grid,
     calculate_metric,
 )
+from RadiShPICR.ConstraintBasedRelativity.geodesic import isotropic_particle_radius
 from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
     vacuum_rescale_factors,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
-from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
+from RadiShPICR.Z4C.geodesic import (
+    compute_normal_geodesic_terms,
+    lapse_freezing_particle_state,
+    normal_particle_state,
+)
 from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
 
 
 calculate_metric_jit = jax.jit(calculate_metric)
-compute_geodesic_terms_jit = jax.jit(compute_geodesic_terms)
+compute_normal_geodesic_terms_jit = jax.jit(compute_normal_geodesic_terms)
 compute_radial_matter_terms_jit = jax.jit(compute_radial_matter_terms)
 particles_rk4_step_jit = jax.jit(particles_rk4_step)
 
@@ -259,17 +264,12 @@ def initialize_oppenheimer_snyder_particles(
 
     particle_areal_radius = np.concatenate(particle_areal_radius)
     particle_weight = np.concatenate(particle_weight)
-    particle_isotropic_radius = isotropic_radius_from_areal(
-        particle_areal_radius,
-        total_mass,
-        surface_areal_radius,
-    )
     particles = particle_species(
         name="oppenheimer_snyder_dust",
         charge=0.0,
         mass=jnp.ones((total_particles,)),
         weight=jnp.asarray(particle_weight),
-        r=jnp.asarray(particle_isotropic_radius),
+        r=jnp.asarray(particle_areal_radius),
         ur=jnp.zeros((total_particles,)),
         phi=jnp.zeros((total_particles,)),
         uphi=jnp.zeros((total_particles,)),
@@ -443,13 +443,14 @@ def rescale_z4c_to_schwarzschild_coordinates(
         r=metric.r * X_r,
         dr=metric.dr * X_r,
     )
+    r_particle, ur = normal_particle_state(particles, metric)
     diagnostic_particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=particles.r * X_r,
-        ur=particles.ur / X_r,
+        r=r_particle * X_r,
+        ur=ur / X_r,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -508,6 +509,31 @@ def build_initial_state(
     z4c_r = 0.5 * (constrained_r[:-1] + constrained_r[1:])
     metric = constrained_state_to_z4c(constrained_U_state, z4c_r)
 
+    r_particle = isotropic_particle_radius(particles, constrained_U_state)
+    A_at_particle = jnp.interp(
+        r_particle,
+        constrained_U_state[-1],
+        constrained_U_state[0],
+    )
+    ur = A_at_particle * particles.ur
+    rs, ubar = lapse_freezing_particle_state(
+        r_particle,
+        ur,
+        metric,
+        particles.get_shape(),
+    )
+    particles = particle_species(
+        name=particles.name,
+        charge=particles.charges,
+        mass=particles.masses,
+        weight=particles.weight,
+        r=rs,
+        ur=ubar,
+        phi=particles.phi,
+        uphi=particles.uphi,
+        shape_mode=particles.shape_mode,
+    )
+
     return (
         metric,
         particles,
@@ -557,7 +583,7 @@ def freefall_collapse_time_step(particles, metric):
 
 
 def particle_crossing_time_step(particles, metric, crossing_fraction=0.25):
-    _, _, dr_dt, _ = compute_geodesic_terms_jit(particles, metric)
+    _, _, dr_dt, _ = compute_normal_geodesic_terms_jit(particles, metric)
     maximum_speed = float(np.max(np.abs(np.asarray(dr_dt))))
     if maximum_speed == 0.0:
         return math.inf
@@ -601,8 +627,25 @@ def write_schwarzschild_snapshot(
         particles,
         total_mass,
     )
+    diagnostic_rs, diagnostic_ubar = lapse_freezing_particle_state(
+        diagnostic_particles.r,
+        diagnostic_particles.ur,
+        diagnostic_metric,
+        diagnostic_particles.get_shape(),
+    )
+    deposition_particles = particle_species(
+        name=diagnostic_particles.name,
+        charge=diagnostic_particles.charges,
+        mass=diagnostic_particles.masses,
+        weight=diagnostic_particles.weight,
+        r=diagnostic_rs,
+        ur=diagnostic_ubar,
+        phi=diagnostic_particles.phi,
+        uphi=diagnostic_particles.uphi,
+        shape_mode=diagnostic_particles.shape_mode,
+    )
     matter_terms = compute_radial_matter_terms_jit(
-        diagnostic_particles,
+        deposition_particles,
         diagnostic_metric,
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
