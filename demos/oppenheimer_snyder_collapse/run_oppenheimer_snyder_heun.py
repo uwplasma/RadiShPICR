@@ -461,11 +461,14 @@ def write_schwarzschild_snapshot(
         phase_space_path,
         rs=np.asarray(diagnostic_particles.r),
         ur_over_A=np.asarray(diagnostic_particles.ur),
+        areal_radius=np.asarray(diagnostic_particles.r),
+        radial_orthonormal_momentum=np.asarray(diagnostic_particles.ur),
         weight=np.asarray(diagnostic_particles.weight),
         step=int(step),
         time=float(schwarzschild_time),
         schwarzschild_time=float(schwarzschild_time),
         species_name=diagnostic_particles.name,
+        particle_state_variables="rs_ur_over_A",
     )
 
 

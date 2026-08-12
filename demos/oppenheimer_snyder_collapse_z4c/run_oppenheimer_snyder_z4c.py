@@ -56,7 +56,7 @@ particles_rk4_step_jit = jax.jit(particles_rk4_step)
 
 TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
-TARGET_SCHWARZSCHILD_TIME = 45.1 * TOTAL_STAR_MASS
+TARGET_SCHWARZSCHILD_TIME = 54 * TOTAL_STAR_MASS
 
 # The constrained demo uses 500 points over 20M.  Extending that spacing to
 # 100M gives 2495 Z4c cells and 2496 constrained-solve nodes.
@@ -429,7 +429,7 @@ def rescale_z4c_to_schwarzschild_coordinates(
     particles,
     exterior_mass,
 ):
-    """Return diagnostic copies in the outer Schwarzschild isotropic chart."""
+    """Return lapse-freezing diagnostic copies in the Schwarzschild chart."""
 
     X_r, X_t, outer_metric_mismatch = (
         schwarzschild_rescale_factors_from_z4c(metric, exterior_mass)
@@ -443,14 +443,16 @@ def rescale_z4c_to_schwarzschild_coordinates(
         r=metric.r * X_r,
         dr=metric.dr * X_r,
     )
-    r_particle, ur = normal_particle_state(particles, metric)
+
+    # Under r -> X_r r and chi -> X_r**2 chi, the lapse-freezing
+    # coordinate transforms as rs -> rs / sqrt(X_r), while ubar is invariant.
     diagnostic_particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=r_particle * X_r,
-        ur=ur / X_r,
+        r=particles.r / jnp.sqrt(X_r),
+        ur=particles.ur,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -627,29 +629,21 @@ def write_schwarzschild_snapshot(
         particles,
         total_mass,
     )
-    diagnostic_rs, diagnostic_ubar = lapse_freezing_particle_state(
-        diagnostic_particles.r,
-        diagnostic_particles.ur,
-        diagnostic_metric,
-        diagnostic_particles.get_shape(),
-    )
-    deposition_particles = particle_species(
-        name=diagnostic_particles.name,
-        charge=diagnostic_particles.charges,
-        mass=diagnostic_particles.masses,
-        weight=diagnostic_particles.weight,
-        r=diagnostic_rs,
-        ur=diagnostic_ubar,
-        phi=diagnostic_particles.phi,
-        uphi=diagnostic_particles.uphi,
-        shape_mode=diagnostic_particles.shape_mode,
-    )
     matter_terms = compute_radial_matter_terms_jit(
-        deposition_particles,
+        diagnostic_particles,
         diagnostic_metric,
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
     areal_radius = diagnostic_metric.r * jnp.sqrt(gT)
+    particle_r, particle_ur = normal_particle_state(
+        diagnostic_particles,
+        diagnostic_metric,
+    )
+    particle_areal_radius = jnp.interp(
+        particle_r,
+        diagnostic_metric.r,
+        areal_radius,
+    )
 
     metric_path = Path(metric_directory) / f"metric_step_{step:06d}.npz"
     np.savez_compressed(
@@ -687,8 +681,12 @@ def write_schwarzschild_snapshot(
     )
     np.savez_compressed(
         phase_space_path,
-        r=np.asarray(diagnostic_particles.r),
-        ur=np.asarray(diagnostic_particles.ur),
+        rs=np.asarray(diagnostic_particles.r),
+        ubar=np.asarray(diagnostic_particles.ur),
+        r=np.asarray(particle_r),
+        ur=np.asarray(particle_ur),
+        areal_radius=np.asarray(particle_areal_radius),
+        radial_orthonormal_momentum=np.asarray(diagnostic_particles.ur),
         phi=np.asarray(diagnostic_particles.phi),
         uphi=np.asarray(diagnostic_particles.uphi),
         weight=np.asarray(diagnostic_particles.weight),
@@ -697,6 +695,7 @@ def write_schwarzschild_snapshot(
         schwarzschild_time=float(schwarzschild_time),
         species_name=diagnostic_particles.name,
         saved_coordinates="schwarzschild_isotropic_diagnostic",
+        particle_state_variables="rs_ubar",
     )
 
     return float(X_r), float(X_t), float(outer_metric_mismatch)
@@ -748,6 +747,9 @@ def run_simulation(args):
         constrained_outer_X_r=float(initial_X_r),
         constrained_outer_X_t=float(initial_X_t),
         target_schwarzschild_time=float(args.target_time),
+        particle_state_variables="rs_ubar",
+        particle_rs_definition="r/chi**(3/4)",
+        particle_ubar_definition="ur*sqrt(chi/conformal_grr)",
     )
 
     step = 0
