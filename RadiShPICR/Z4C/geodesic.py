@@ -61,14 +61,18 @@ def isotropic_particle_state(particles, metric: Z4C_Metric):
     # cell-centered metric point while rejecting negative radii.
 
     interpolation_radius = jnp.where(valid_state, r_particle, 0.0)
-    chi_p, conformal_grr_p = _interpolate_cell_centered_fields_to_particles(
-        jnp.stack((metric.chi, metric.conformal_grr)),
+    (
+        alpha_p,
+        chi_p,
+        conformal_grr_p,
+    ) = _interpolate_cell_centered_fields_to_particles(
+        jnp.stack((metric.alpha, metric.chi, metric.conformal_grr)),
         interpolation_radius,
         grid,
         shape_mode=particles.get_shape(),
-        field_parities=jnp.asarray((1, 1)),
+        field_parities=jnp.asarray((1, 1, 1)),
     )
-    ur = ubar * jnp.sqrt(conformal_grr_p / chi_p)
+    ur = (ubar / alpha_p) * jnp.sqrt(conformal_grr_p / chi_p)
     ur = jnp.where(valid_state, ur, jnp.nan)
 
     return r_particle, ur
@@ -91,14 +95,18 @@ def lapse_freezing_particle_state(r_particle, ur, metric, shape_mode):
     )
     rs = jnp.where(valid_state, rs, jnp.nan)
 
-    chi_p, conformal_grr_p = _interpolate_cell_centered_fields_to_particles(
-        jnp.stack((metric.chi, metric.conformal_grr)),
+    (
+        alpha_p,
+        chi_p,
+        conformal_grr_p,
+    ) = _interpolate_cell_centered_fields_to_particles(
+        jnp.stack((metric.alpha, metric.chi, metric.conformal_grr)),
         interpolation_radius,
         grid,
         shape_mode=shape_mode,
-        field_parities=jnp.asarray((1, 1)),
+        field_parities=jnp.asarray((1, 1, 1)),
     )
-    ubar = ur * jnp.sqrt(chi_p / conformal_grr_p)
+    ubar = alpha_p * ur * jnp.sqrt(chi_p / conformal_grr_p)
     ubar = jnp.where(valid_state, ubar, jnp.nan)
 
     return rs, ubar
@@ -112,6 +120,7 @@ def _explicit_lapse_freezing_rhs(
     chi_p,
     conformal_grr_p,
     dalphadr_p,
+    dalphadt_p,
     dbetadr_p,
     dchidr_p,
     dgrrdr_p,
@@ -120,46 +129,41 @@ def _explicit_lapse_freezing_rhs(
 ):
     """Evaluate the shift-aware ``rs`` and ``ubar`` notebook expressions."""
 
-    lorentz_factor = jnp.sqrt(1.0 + ubar**2)
+    lapse_magnitude = jnp.abs(alpha_p)
+    coordinate_energy = jnp.sqrt(alpha_p**2 + ubar**2)
 
     # LapseFreezingZ4C.nb, eqRsFinal after
     # conformal_gt = 1 / sqrt(conformal_grr).
-    drs_dt = (
-        4.0 * chi_p * conformal_grr_p**1.25 * alpha_p * ubar
-        - dgrrdr_p
-        * jnp.sqrt(chi_p**3 * conformal_grr_p)
-        * alpha_p
-        * rs
-        * ubar
-        - 2.0
+    metric_advection = conformal_grr_p * (
+        4.0 * beta_p * jnp.sqrt(chi_p) * conformal_grr_p**0.75
+        - beta_p * chi_p * dgrrdr_p * rs
+        + chi_p * dgrrdt_p * rs
+        - 2.0 * beta_p * dchidr_p * conformal_grr_p * rs
+        + 2.0 * dchidt_p * conformal_grr_p * rs
+    )
+    radial_motion = (
+        -4.0 * chi_p * conformal_grr_p**1.25
+        + dgrrdr_p * jnp.sqrt(chi_p**3 * conformal_grr_p) * rs
+        + 2.0
         * dchidr_p
         * jnp.sqrt(chi_p * conformal_grr_p**3)
-        * alpha_p
         * rs
-        * ubar
-        - 4.0
-        * beta_p
-        * jnp.sqrt(chi_p)
-        * conformal_grr_p**1.75
-        * lorentz_factor
-        + conformal_grr_p
-        * (
-            beta_p * chi_p * dgrrdr_p
-            - chi_p * dgrrdt_p
-            + 2.0 * beta_p * dchidr_p * conformal_grr_p
-            - 2.0 * dchidt_p * conformal_grr_p
-        )
-        * rs
-        * lorentz_factor
-    ) / (
-        4.0
-        * chi_p
-        * conformal_grr_p**2
-        * lorentz_factor
+    ) * ubar * lapse_magnitude / coordinate_energy
+
+    drs_dt = -(metric_advection + radial_motion) / (
+        4.0 * chi_p * conformal_grr_p**2
     )
 
-    # LapseFreezingZ4C.nb, eqUbarFinal.
-    dubar_dt = (
+    # LapseFreezingZ4C.nb, eqUbarFinal. The lapse time derivative is required
+    # because ubar = alpha * u_r * sqrt(chi / conformal_grr).
+    lapse_advection = (
+        2.0
+        * chi_p
+        * (-beta_p * dalphadr_p + dalphadt_p)
+        * conformal_grr_p
+        * ubar
+    )
+    metric_momentum = (
         (
             beta_p * chi_p * dgrrdr_p
             - chi_p * dgrrdt_p
@@ -167,15 +171,22 @@ def _explicit_lapse_freezing_rhs(
             - beta_p * dchidr_p * conformal_grr_p
             + dchidt_p * conformal_grr_p
         )
+        * alpha_p
         * ubar
-        - 2.0
+    )
+    lapse_force = (
+        -2.0
         * dalphadr_p
-        * jnp.sqrt(chi_p**3 * conformal_grr_p)
-        * lorentz_factor
-    ) / (
+        * jnp.sqrt(
+            chi_p**3 * conformal_grr_p / coordinate_energy**2
+        )
+        * lapse_magnitude**3
+    )
+    dubar_dt = (lapse_advection + metric_momentum + lapse_force) / (
         2.0
         * chi_p
         * conformal_grr_p
+        * alpha_p
     )
 
     return dubar_dt, drs_dt
@@ -201,6 +212,7 @@ def compute_geodesic_terms(
         chi_p,
         conformal_grr_p,
         dalphadr_p,
+        dalphadt_p,
         dbetadr_p,
         dchidr_p,
         dgrrdr_p,
@@ -214,6 +226,7 @@ def compute_geodesic_terms(
                 metric.chi,
                 metric.conformal_grr,
                 first_derivative(metric.alpha, metric.dr, parity=1),
+                metric_derivative.alpha,
                 first_derivative(metric.beta, metric.dr, parity=-1),
                 first_derivative(metric.chi, metric.dr, parity=1),
                 first_derivative(
@@ -229,7 +242,7 @@ def compute_geodesic_terms(
         grid,
         shape_mode=particle_shape,
         field_parities=jnp.asarray(
-            (1, -1, 1, 1, -1, 1, -1, -1, 1, 1)
+            (1, -1, 1, 1, -1, 1, 1, -1, -1, 1, 1)
         ),
     )
 
@@ -242,6 +255,7 @@ def compute_geodesic_terms(
         chi_p,
         conformal_grr_p,
         dalphadr_p,
+        dalphadt_p,
         dbetadr_p,
         dchidr_p,
         dgrrdr_p,
