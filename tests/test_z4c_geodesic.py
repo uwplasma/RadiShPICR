@@ -37,11 +37,16 @@ def _metric_from_fields(r, alpha, beta, chi, conformal_grr, conformal_gt):
     )
 
 
-def _metric_derivative(metric, dchi_dt=0.0, dgrr_dt=0.0):
+def _metric_derivative(
+    metric,
+    dalpha_dt=0.0,
+    dchi_dt=0.0,
+    dgrr_dt=0.0,
+):
     zeros = jnp.zeros_like(metric.r)
 
     return Z4C_Metric(
-        alpha=zeros,
+        alpha=jnp.full_like(metric.r, dalpha_dt),
         beta=zeros,
         conformal_grr=jnp.full_like(metric.r, dgrr_dt),
         conformal_gt=zeros,
@@ -85,7 +90,7 @@ def test_lapse_freezing_particle_state_round_trip_and_jit():
     conformal_grr = 1.1 + 0.02 * r
     metric = _metric_from_fields(
         r,
-        alpha=jnp.ones_like(r),
+        alpha=0.7 + 0.03 * r,
         beta=jnp.zeros_like(r),
         chi=0.8 + 0.01 * r,
         conformal_grr=conformal_grr,
@@ -107,22 +112,71 @@ def test_lapse_freezing_particle_state_round_trip_and_jit():
     geometric_areal_radius = metric.r * jnp.sqrt(
         metric.conformal_gt / metric.chi
     )
+    expected_ubar = (
+        metric.alpha[jnp.asarray([5, 17])]
+        * ur
+        * jnp.sqrt(
+            metric.chi[jnp.asarray([5, 17])]
+            / metric.conformal_grr[jnp.asarray([5, 17])]
+        )
+    )
 
     assert jnp.allclose(determinant_reduced_radius, geometric_areal_radius)
+    assert jnp.allclose(particles.ur, expected_ubar)
     assert jnp.allclose(eager_r, r_particle)
     assert jnp.allclose(eager_ur, ur)
     assert jnp.allclose(compiled_r, r_particle)
     assert jnp.allclose(compiled_ur, ur)
 
 
-def test_invalid_areal_radius_maps_and_particle_positions_are_nonfinite():
+def test_monotonic_areal_lookup_matches_previous_interpolation_for_all_shapes():
+    r = 0.25 + 0.25 * jnp.arange(32)
+    conformal_grr = 1.1 + 0.02 * r
+    metric = _metric_from_fields(
+        r,
+        alpha=0.7 + 0.03 * r,
+        beta=jnp.zeros_like(r),
+        chi=0.8 + 0.01 * r,
+        conformal_grr=conformal_grr,
+        conformal_gt=1.0 / jnp.sqrt(conformal_grr),
+    )
+    r_particle = jnp.asarray([0.0, 0.05, 0.25, 0.875, 4.13])
+    ur = jnp.asarray([0.0, 0.1, -0.2, 0.4, -0.3])
+    r_grid = jnp.concatenate((jnp.asarray([0.0]), metric.r))
+    rs_grid = jnp.concatenate((jnp.asarray([0.0]), _areal_radius_grid(metric)))
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        particles = _lapse_freezing_particles(
+            metric,
+            r_particle,
+            ur,
+            jnp.zeros_like(ur),
+            shape_mode=shape_mode,
+        )
+        expected_r = jnp.interp(particles.r, rs_grid, r_grid)
+
+        eager_r, eager_ur = isotropic_particle_state(particles, metric)
+        compiled_r, compiled_ur = jax.jit(isotropic_particle_state)(
+            particles,
+            metric,
+        )
+
+        assert jnp.allclose(eager_r, expected_r, rtol=1.0e-14, atol=1.0e-14)
+        assert jnp.allclose(eager_r, r_particle, rtol=1.0e-14, atol=1.0e-14)
+        assert jnp.allclose(eager_ur, ur, rtol=1.0e-14, atol=1.0e-14)
+        assert jnp.allclose(compiled_r, eager_r, rtol=1.0e-14, atol=1.0e-14)
+        assert jnp.allclose(compiled_ur, eager_ur, rtol=1.0e-14, atol=1.0e-14)
+
+
+def test_nonmonotonic_areal_map_uses_only_the_origin_branch():
     r = jnp.asarray([0.5, 1.0, 1.5, 2.0])
     ones = jnp.ones_like(r)
+    areal_radius = jnp.asarray([0.5, 1.0, 1.5, 1.499999])
     nonmonotonic_metric = _metric_from_fields(
         r,
         alpha=ones,
         beta=jnp.zeros_like(r),
-        chi=jnp.asarray([0.25, 4.0, 0.5625, 0.25]),
+        chi=(r / areal_radius) ** 2,
         conformal_grr=ones,
         conformal_gt=ones,
     )
@@ -131,10 +185,10 @@ def test_invalid_areal_radius_maps_and_particle_positions_are_nonfinite():
         charge=0.0,
         mass=1.0,
         weight=1.0,
-        r=jnp.asarray([1.25]),
-        ur=jnp.asarray([0.0]),
-        phi=jnp.asarray([0.0]),
-        uphi=jnp.asarray([0.0]),
+        r=jnp.asarray([0.25, 1.25, 1.5001]),
+        ur=jnp.zeros(3),
+        phi=jnp.zeros(3),
+        uphi=jnp.zeros(3),
         shape_mode="nearest",
     )
 
@@ -142,17 +196,44 @@ def test_invalid_areal_radius_maps_and_particle_positions_are_nonfinite():
         particles,
         nonmonotonic_metric,
     )
-    assert jnp.all(jnp.isnan(mapped_r))
-    assert jnp.all(jnp.isnan(mapped_ur))
+    compiled_r, compiled_ur = jax.jit(isotropic_particle_state)(
+        particles,
+        nonmonotonic_metric,
+    )
+    assert jnp.allclose(mapped_r[:2], jnp.asarray([0.25, 1.25]))
+    assert jnp.allclose(mapped_ur[:2], 0.0)
+    assert jnp.isnan(mapped_r[-1])
+    assert jnp.isnan(mapped_ur[-1])
+    assert jnp.allclose(compiled_r[:2], mapped_r[:2])
+    assert jnp.allclose(compiled_ur[:2], mapped_ur[:2])
+    assert jnp.isnan(compiled_r[-1])
+    assert jnp.isnan(compiled_ur[-1])
 
     mapped_rs, mapped_ubar = lapse_freezing_particle_state(
-        jnp.asarray([1.0]),
-        jnp.asarray([0.2]),
+        jnp.asarray([1.25, 1.75]),
+        jnp.asarray([0.2, -0.1]),
         nonmonotonic_metric,
         "nearest",
     )
-    assert jnp.all(jnp.isnan(mapped_rs))
-    assert jnp.all(jnp.isnan(mapped_ubar))
+    compiled_rs, compiled_ubar = jax.jit(
+        lapse_freezing_particle_state,
+        static_argnames=("shape_mode",),
+    )(
+        jnp.asarray([1.25, 1.75]),
+        jnp.asarray([0.2, -0.1]),
+        nonmonotonic_metric,
+        "nearest",
+    )
+    expected_rs = jnp.interp(
+        jnp.asarray([1.25, 1.75]),
+        jnp.concatenate((jnp.asarray([0.0]), r)),
+        jnp.concatenate((jnp.asarray([0.0]), areal_radius)),
+    )
+    assert jnp.all(jnp.isfinite(mapped_rs))
+    assert jnp.all(jnp.isfinite(mapped_ubar))
+    assert jnp.allclose(mapped_rs, expected_rs)
+    assert jnp.allclose(compiled_rs, mapped_rs)
+    assert jnp.allclose(compiled_ubar, mapped_ubar)
 
     flat_metric = nonmonotonic_metric._replace(chi=ones)
     particles.r = jnp.asarray([-0.1, 3.0])
@@ -244,7 +325,9 @@ def test_even_quadratic_lapse_has_regular_inner_cell_acceleration():
     )
     metric_derivative = _metric_derivative(metric)
     r_particle = jnp.asarray([0.0, 0.001, 0.005, 0.01, 0.019, 0.02, 0.03])
-    expected_dubar_dt = -2.0 * c * r_particle
+    expected_dubar_dt = (
+        -(1.0 + c * r_particle**2) * 2.0 * c * r_particle
+    )
 
     for shape_mode in ("nearest", "linear", "quadratic"):
         particles = _lapse_freezing_particles(
@@ -265,7 +348,7 @@ def test_even_quadratic_lapse_has_regular_inner_cell_acceleration():
             metric_derivative,
         )
 
-        assert jnp.allclose(eager_terms[0], expected_dubar_dt, atol=1.0e-7)
+        assert jnp.allclose(eager_terms[0], expected_dubar_dt, atol=3.0e-7)
         assert jnp.allclose(eager_terms[1], 0.0)
         assert jnp.allclose(eager_terms[2], 0.0)
         assert jnp.allclose(eager_terms[3], 0.0)
@@ -316,6 +399,7 @@ def test_shift_aware_lapse_freezing_rhs_matches_notebook_expression():
     )
     metric_derivative = _metric_derivative(
         metric,
+        dalpha_dt=0.04,
         dchi_dt=0.03,
         dgrr_dt=-0.02,
     )
@@ -362,53 +446,47 @@ def test_shift_aware_lapse_freezing_rhs_matches_notebook_expression():
     )
     rs = particles.r
     ubar = particles.ur
-    lorentz_factor = jnp.sqrt(1.0 + ubar**2)
+    lapse_magnitude = jnp.abs(alpha_p)
+    coordinate_energy = jnp.sqrt(alpha_p**2 + ubar**2)
 
     # LapseFreezingZ4C.nb: eqRsFinal after applying detgRule.
-    expected_drs_dt = (
-        4.0 * chi_p * grr_p**1.25 * alpha_p * ubar
-        - dgrr_dr_p
-        * jnp.sqrt(chi_p**3 * grr_p)
-        * alpha_p
-        * rs
-        * ubar
-        - 2.0
-        * dchi_dr_p
-        * jnp.sqrt(chi_p * grr_p**3)
-        * alpha_p
-        * rs
-        * ubar
-        - 4.0
-        * beta_p
-        * jnp.sqrt(chi_p)
-        * grr_p**1.75
-        * lorentz_factor
-        + grr_p
-        * (
-            beta_p * chi_p * dgrr_dr_p
-            + 0.02 * chi_p
-            + 2.0 * beta_p * dchi_dr_p * grr_p
-            - 0.06 * grr_p
-        )
-        * rs
-        * lorentz_factor
-    ) / (4.0 * chi_p * grr_p**2 * lorentz_factor)
+    metric_advection = grr_p * (
+        4.0 * beta_p * jnp.sqrt(chi_p) * grr_p**0.75
+        - beta_p * chi_p * dgrr_dr_p * rs
+        - 0.02 * chi_p * rs
+        - 2.0 * beta_p * dchi_dr_p * grr_p * rs
+        + 0.06 * grr_p * rs
+    )
+    radial_motion = (
+        -4.0 * chi_p * grr_p**1.25
+        + dgrr_dr_p * jnp.sqrt(chi_p**3 * grr_p) * rs
+        + 2.0 * dchi_dr_p * jnp.sqrt(chi_p * grr_p**3) * rs
+    ) * ubar * lapse_magnitude / coordinate_energy
+    expected_drs_dt = -(
+        metric_advection + radial_motion
+    ) / (4.0 * chi_p * grr_p**2)
 
     # LapseFreezingZ4C.nb: eqUbarFinal.
     expected_dubar_dt = (
-        (
+        2.0
+        * chi_p
+        * (-beta_p * dalpha_dr_p + 0.04)
+        * grr_p
+        * ubar
+        + (
             beta_p * chi_p * dgrr_dr_p
             + 0.02 * chi_p
             + 2.0 * chi_p * dbeta_dr_p * grr_p
             - beta_p * dchi_dr_p * grr_p
             + 0.03 * grr_p
         )
+        * alpha_p
         * ubar
         - 2.0
         * dalpha_dr_p
-        * jnp.sqrt(chi_p**3 * grr_p)
-        * lorentz_factor
-    ) / (2.0 * chi_p * grr_p)
+        * jnp.sqrt(chi_p**3 * grr_p / coordinate_energy**2)
+        * lapse_magnitude**3
+    ) / (2.0 * chi_p * grr_p * alpha_p)
 
     assert jnp.allclose(drs_dt, expected_drs_dt)
     assert jnp.allclose(dubar_dt, expected_dubar_dt)
@@ -436,7 +514,6 @@ def test_fixed_schwarzschild_areal_radius_and_notebook_horizon_rhs():
     d_chi_dr = 2.0 * mass / (r_particle**2 * psi**5)
 
     ubar = jnp.full_like(r_particle, -0.4)
-    lorentz_factor = jnp.sqrt(1.0 + ubar**2)
     rs = r_particle / jnp.sqrt(chi)
 
     dubar_dt, drs_dt = _explicit_lapse_freezing_rhs(
@@ -447,6 +524,7 @@ def test_fixed_schwarzschild_areal_radius_and_notebook_horizon_rhs():
         chi_p=chi,
         conformal_grr_p=jnp.ones_like(r_particle),
         dalphadr_p=d_alpha_dr,
+        dalphadt_p=jnp.zeros_like(r_particle),
         dbetadr_p=jnp.zeros_like(r_particle),
         dchidr_p=d_chi_dr,
         dgrrdr_p=jnp.zeros_like(r_particle),
@@ -458,14 +536,93 @@ def test_fixed_schwarzschild_areal_radius_and_notebook_horizon_rhs():
     assert jnp.all(jnp.diff(rs[::-1]) > 0.0)
     assert jnp.all(drs_dt < 0.0)
     assert jnp.all(jnp.diff(jnp.abs(drs_dt)) < 0.0)
-    assert jnp.abs(drs_dt[-1]) < 1.0e-7
+    assert jnp.all(dubar_dt < 0.0)
+    assert jnp.all(jnp.diff(jnp.abs(dubar_dt)) < 0.0)
+    assert jnp.abs(drs_dt[-1]) < 1.0e-10
+    assert jnp.abs(dubar_dt[-1]) < 1.0e-10
     assert jnp.allclose(rs[-1], 2.0 * mass, rtol=1.0e-6)
 
-    # The notebook freezes R, but not ubar, at r_H = M / 2.
-    expected_horizon_dubar_dt = -lorentz_factor[-1] / (4.0 * mass)
-    assert jnp.allclose(
-        dubar_dt[-1],
-        expected_horizon_dubar_dt,
-        rtol=1.0e-4,
-        atol=1.0e-6,
+    # The revised notebook freezes both R and ubar at r_H = M / 2.
+
+
+def test_fixed_schwarzschild_particle_freezes_at_event_horizon():
+    mass = 1.0
+    dt = 0.05
+    num_steps = 1000
+
+    def schwarzschild_rhs(rs, ubar):
+        isotropic_r = 0.5 * (
+            rs
+            - mass
+            + jnp.sqrt(rs * (rs - 2.0 * mass))
+        )
+        psi = 1.0 + mass / (2.0 * isotropic_r)
+        alpha = (1.0 - mass / (2.0 * isotropic_r)) / psi
+        chi = psi**-4
+        dalpha_dr = mass / (isotropic_r**2 * psi**2)
+        dchi_dr = 2.0 * mass / (isotropic_r**2 * psi**5)
+        zeros = jnp.zeros_like(rs)
+        ones = jnp.ones_like(rs)
+
+        dubar_dt, drs_dt = _explicit_lapse_freezing_rhs(
+            rs=rs,
+            ubar=ubar,
+            alpha_p=alpha,
+            beta_p=zeros,
+            chi_p=chi,
+            conformal_grr_p=ones,
+            dalphadr_p=dalpha_dr,
+            dalphadt_p=zeros,
+            dbetadr_p=zeros,
+            dchidr_p=dchi_dr,
+            dgrrdr_p=zeros,
+            dchidt_p=zeros,
+            dgrrdt_p=zeros,
+        )
+
+        return drs_dt, dubar_dt
+
+    def advance_particle(carry, _):
+        rs, ubar = carry
+
+        k1_rs, k1_ubar = schwarzschild_rhs(rs, ubar)
+        k2_rs, k2_ubar = schwarzschild_rhs(
+            rs + 0.5 * dt * k1_rs,
+            ubar + 0.5 * dt * k1_ubar,
+        )
+        k3_rs, k3_ubar = schwarzschild_rhs(
+            rs + 0.5 * dt * k2_rs,
+            ubar + 0.5 * dt * k2_ubar,
+        )
+        k4_rs, k4_ubar = schwarzschild_rhs(
+            rs + dt * k3_rs,
+            ubar + dt * k3_ubar,
+        )
+
+        rs = rs + (dt / 6.0) * (
+            k1_rs + 2.0 * k2_rs + 2.0 * k3_rs + k4_rs
+        )
+        ubar = ubar + (dt / 6.0) * (
+            k1_ubar + 2.0 * k2_ubar + 2.0 * k3_ubar + k4_ubar
+        )
+
+        return (rs, ubar), (rs, ubar)
+
+    initial_state = (jnp.asarray(2.25), jnp.asarray(-0.4))
+    (final_rs, final_ubar), (rs_history, ubar_history) = jax.lax.scan(
+        advance_particle,
+        initial_state,
+        xs=None,
+        length=num_steps,
     )
+    final_drs_dt, final_dubar_dt = schwarzschild_rhs(
+        final_rs,
+        final_ubar,
+    )
+
+    assert jnp.all(jnp.diff(rs_history) <= 0.0)
+    assert jnp.all(rs_history >= 2.0 * mass)
+    assert jnp.all(jnp.isfinite(ubar_history))
+    assert jnp.abs(final_rs - 2.0 * mass) < 1.0e-8 * mass
+    assert jnp.abs(final_drs_dt) < 1.0e-10
+    assert jnp.abs(final_dubar_dt) < 1.0e-10

@@ -4,6 +4,7 @@ import jax.numpy as jnp
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
+    _cell_centered_radial_shape_stencil,
     interpolate_field_to_particles,
     shape_weights_at_point,
 )
@@ -18,7 +19,11 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
 )
 from RadiShPICR.Z4C.constraint_terms import dGammadt
 from RadiShPICR.Z4C.extrinsic_curvature import dArrdt, dAtdt, dKhdt
-from RadiShPICR.Z4C.geodesic import lapse_freezing_particle_state
+from RadiShPICR.Z4C.geodesic import (
+    compute_geodesic_terms,
+    isotropic_particle_state,
+    lapse_freezing_particle_state,
+)
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -63,7 +68,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
     r = jnp.arange(0.5, 6.0, 1.0)
     zeros = jnp.zeros_like(r)
     metric = Z4C_Metric(
-        alpha=jnp.ones_like(r),
+        alpha=0.7 + 0.02 * r,
         beta=zeros,
         conformal_grr=1.0 + 0.02 * r,
         conformal_gt=1.0 + 0.01 * r,
@@ -208,6 +213,106 @@ def test_sparse_matter_deposition_matches_dense_reference():
             compute_radial_momentum_density(particles, metric),
             expected_Sr,
         )
+
+
+def test_turnover_outside_particle_support_preserves_sources_and_geodesics():
+    r = 0.5 + 0.5 * jnp.arange(8)
+    zeros = jnp.zeros_like(r)
+    ones = jnp.ones_like(r)
+    areal_radius = r.at[-2].set(r[-3] - 1.0e-8)
+    metric = Z4C_Metric(
+        alpha=0.8 + 0.01 * r,
+        beta=zeros,
+        conformal_grr=ones,
+        conformal_gt=ones,
+        chi=(r / areal_radius) ** 2,
+        Kh=zeros,
+        Arr=zeros,
+        At=zeros,
+        theta=zeros,
+        Gamma=zeros,
+        kappa=zeros,
+        eta=zeros,
+        nu=zeros,
+        r=r,
+        dr=r[1] - r[0],
+    )
+    metric_derivative = Z4C_Metric(
+        alpha=zeros,
+        beta=zeros,
+        conformal_grr=zeros,
+        conformal_gt=zeros,
+        chi=zeros,
+        Kh=zeros,
+        Arr=zeros,
+        At=zeros,
+        theta=zeros,
+        Gamma=zeros,
+        kappa=zeros,
+        eta=zeros,
+        nu=zeros,
+        r=zeros,
+        dr=jnp.asarray(0.0, dtype=metric.dr.dtype),
+    )
+    r_particle = jnp.asarray([0.2, 0.7, 1.2, 2.2])
+    ur = jnp.asarray([0.0, 0.2, -0.1, 0.3])
+    particle_mass = jnp.asarray([0.2, 0.3, 0.1, 0.4])
+
+    assert jnp.min(jnp.diff(areal_radius)) < 0.0
+    assert jnp.max(r_particle) < r[-3]
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        rs, ubar = lapse_freezing_particle_state(
+            r_particle,
+            ur,
+            metric,
+            shape_mode,
+        )
+        particles = particle_species(
+            name="turnover",
+            charge=0.0,
+            mass=1.0,
+            weight=particle_mass,
+            r=rs,
+            ur=ubar,
+            phi=jnp.zeros_like(rs),
+            uphi=jnp.zeros_like(rs),
+            shape_mode=shape_mode,
+        )
+
+        mapped_r, mapped_ur = isotropic_particle_state(particles, metric)
+        _, even_weights, _, _ = _cell_centered_radial_shape_stencil(
+            mapped_r,
+            metric.r,
+            metric.dr,
+            shape_mode,
+        )
+        matter_terms = compute_radial_matter_terms(particles, metric)
+        compiled_matter_terms = jax.jit(compute_radial_matter_terms)(
+            particles,
+            metric,
+        )
+        geodesic_terms = compute_geodesic_terms(
+            particles,
+            metric,
+            metric_derivative,
+        )
+
+        particle_energy = jnp.sum(
+            particles.get_mass() * jnp.sqrt(1.0 + mapped_ur**2)
+        )
+        deposited_energy = jnp.sum(
+            matter_terms.rho * _proper_radial_shell_volume(metric)
+        )
+
+        assert jnp.allclose(mapped_r, r_particle)
+        assert jnp.allclose(mapped_ur, ur)
+        assert jnp.allclose(jnp.sum(even_weights, axis=0), 1.0)
+        assert jnp.all(jnp.isfinite(jnp.stack(geodesic_terms)))
+        assert jnp.allclose(deposited_energy, particle_energy)
+        for eager_term, compiled_term in zip(matter_terms, compiled_matter_terms):
+            assert jnp.all(jnp.isfinite(eager_term))
+            assert jnp.allclose(compiled_term, eager_term)
 
 
 def test_matter_stress_trace_and_zero_angular_momentum_limit():

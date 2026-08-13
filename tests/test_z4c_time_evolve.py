@@ -440,6 +440,77 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
     )
 
 
+def test_particles_rk4_step_allows_stage_turnover_outside_particle_support(
+    monkeypatch,
+):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+    from RadiShPICR.Z4C.geodesic import (
+        _areal_radius_grid,
+        lapse_freezing_particle_state,
+    )
+
+    r = 0.5 + 0.5 * jnp.arange(10)
+    metric = _flat_metric(r)
+    r_particle = jnp.asarray([0.2, 0.7, 1.2])
+    ur = jnp.zeros_like(r_particle)
+    rs, ubar = lapse_freezing_particle_state(
+        r_particle,
+        ur,
+        metric,
+        "nearest",
+    )
+    particles = particle_species(
+        name="turnover",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([0.2, 0.3, 0.5]),
+        r=rs,
+        ur=ubar,
+        phi=jnp.zeros_like(rs),
+        uphi=jnp.zeros_like(rs),
+        shape_mode="nearest",
+    )
+    initial_rs = particles.r.copy()
+    initial_ubar = particles.ur.copy()
+    dt = 0.1
+
+    dchi = jnp.zeros_like(r).at[-2].set(10.0)
+    derivative_multipliers = [1.0, 0.0, 1.0, -3.0]
+    stage_minimum_dR = []
+
+    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+        stage_minimum_dR.append(
+            jnp.min(jnp.diff(_areal_radius_grid(stage_metric)))
+        )
+        multiplier = derivative_multipliers.pop(0)
+        return _metric_derivative(stage_metric, alpha_value=0.0)._replace(
+            chi=multiplier * dchi,
+        )
+
+    monkeypatch.setattr(
+        time_evolve,
+        "metric_time_derivatives",
+        fake_metric_time_derivatives,
+    )
+
+    particles, evolved_metric = time_evolve.particles_rk4_step(
+        particles,
+        metric,
+        dt,
+    )
+
+    assert derivative_multipliers == []
+    assert stage_minimum_dR[0] > 0.0
+    assert stage_minimum_dR[1] < 0.0
+    assert stage_minimum_dR[2] > 0.0
+    assert stage_minimum_dR[3] < 0.0
+    assert jnp.all(jnp.isfinite(particles.r))
+    assert jnp.all(jnp.isfinite(particles.ur))
+    assert jnp.allclose(particles.r, initial_rs)
+    assert jnp.allclose(particles.ur, initial_ubar)
+    assert jnp.allclose(evolved_metric.chi, metric.chi)
+
+
 def test_flat_space_radial_particle_trajectory_is_exact():
     from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 

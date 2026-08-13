@@ -4,6 +4,7 @@ import numpy as np
 from demos.oppenheimer_snyder_collapse_z4c import (
     run_oppenheimer_snyder_z4c as os_z4c,
 )
+from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.geodesic import (
     compute_geodesic_terms as compute_constrained_geodesic_terms,
 )
@@ -19,6 +20,7 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.Z4C.time_evolve import metric_time_derivatives
 from RadiShPICR.particles import particle_species
+from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
 
 
 def _flat_metric():
@@ -90,7 +92,7 @@ def test_schwarzschild_rescaling_preserves_lapse_freezing_particle_state(
     )
 
     assert jnp.allclose(diagnostic_particles.r, particles.r)
-    assert jnp.allclose(diagnostic_particles.ur, particles.ur)
+    assert jnp.allclose(diagnostic_particles.ur, particles.ur / X_t)
     assert jnp.allclose(diagnostic_r, jnp.asarray([1.0, 2.0, 3.0]) * X_r)
     assert jnp.allclose(diagnostic_ur, jnp.asarray([0.2, -0.1, 0.05]) / X_r)
 
@@ -100,6 +102,7 @@ def test_z4c_snapshot_writes_solver_and_common_comparison_variables(
     tmp_path,
 ):
     metric = _flat_metric()
+    metric = metric._replace(alpha=0.8 * metric.alpha)
     particles = _particles(metric)
     metric_directory = tmp_path / "metric"
     phase_space_directory = tmp_path / "phase_space"
@@ -132,13 +135,16 @@ def test_z4c_snapshot_writes_solver_and_common_comparison_variables(
             "radial_orthonormal_momentum",
         }.issubset(snapshot.files)
         assert str(snapshot["particle_state_variables"]) == "rs_ubar"
+        assert str(snapshot["particle_ubar_definition"]) == (
+            "alpha*ur*sqrt(chi/conformal_grr)"
+        )
         assert np.allclose(snapshot["rs"], particles.r)
         assert np.allclose(snapshot["ubar"], particles.ur)
         assert np.allclose(snapshot["rs"], snapshot["areal_radius"])
         assert np.allclose(snapshot["areal_radius"], snapshot["r"])
         assert np.allclose(
             snapshot["radial_orthonormal_momentum"],
-            snapshot["ubar"],
+            snapshot["ur"],
         )
 
 
@@ -182,15 +188,27 @@ def test_reduced_os_initial_state_deposits_total_particle_energy():
         constrained_particles,
         constrained_U_state,
     )
+    metric_derivative = metric_time_derivatives(metric, matter_terms)
     z4c_dubar_dt, _, _, _ = compute_z4c_geodesic_terms(
         particles,
         metric,
-        metric_time_derivatives(metric, matter_terms),
+        metric_derivative,
+    )
+    alpha_p, dalpha_dt_p = interpolate_fields_to_particles(
+        jnp.stack((metric.alpha, metric_derivative.alpha)),
+        r_particle,
+        RadialGrid(metric.r, metric.r, metric.dr, metric.r[-1]),
+        shape_mode=particles.get_shape(),
+    )
+    expected_z4c_dubar_dt = (
+        alpha_p * constrained_dubar_dt
+        + dalpha_dt_p * particles.ur / alpha_p
     )
 
     inner_particles = r_particle < metric.r[0]
     relative_discrepancy = jnp.abs(
-        (z4c_dubar_dt - constrained_dubar_dt) / constrained_dubar_dt
+        (z4c_dubar_dt - expected_z4c_dubar_dt)
+        / expected_z4c_dubar_dt
     )
 
     assert jnp.any(inner_particles)

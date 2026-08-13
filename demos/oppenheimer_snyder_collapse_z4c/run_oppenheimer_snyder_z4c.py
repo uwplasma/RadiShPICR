@@ -39,12 +39,16 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 from RadiShPICR.Z4C.geodesic import (
+    _radial_grid_from_metric,
     isotropic_particle_state,
     lapse_freezing_particle_state,
 )
 from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
+from RadiShPICR.particles.particle_shapes import (
+    _interpolate_cell_centered_fields_to_particles,
+)
 
 
 calculate_metric_jit = jax.jit(calculate_metric)
@@ -442,15 +446,15 @@ def rescale_z4c_to_schwarzschild_coordinates(
         dr=metric.dr * X_r,
     )
 
-    # Under r -> X_r r and chi -> X_r**2 chi, both the areal radius
-    # R = r / sqrt(chi * sqrt(conformal_grr)) and ubar are invariant.
+    # The areal radius is invariant under the spatial rescaling. Since the new
+    # ubar includes alpha, it follows the lapse normalization by 1 / X_t.
     diagnostic_particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
         r=particles.r,
-        ur=particles.ur,
+        ur=particles.ur / X_t,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -628,6 +632,16 @@ def write_schwarzschild_snapshot(
         diagnostic_particles,
         diagnostic_metric,
     )
+    alpha_at_particle = _interpolate_cell_centered_fields_to_particles(
+        diagnostic_metric.alpha[jnp.newaxis, :],
+        particle_r,
+        _radial_grid_from_metric(diagnostic_metric),
+        shape_mode=diagnostic_particles.get_shape(),
+        field_parities=jnp.asarray((1,)),
+    )[0]
+    radial_orthonormal_velocity = (
+        diagnostic_particles.ur / alpha_at_particle
+    )
     particle_areal_radius = diagnostic_particles.r
     # The evolved particle coordinate is already the areal radius. Keeping the
     # saved diagnostic equal to rs avoids introducing a second interpolation.
@@ -673,7 +687,7 @@ def write_schwarzschild_snapshot(
         r=np.asarray(particle_r),
         ur=np.asarray(particle_ur),
         areal_radius=np.asarray(particle_areal_radius),
-        radial_orthonormal_momentum=np.asarray(diagnostic_particles.ur),
+        radial_orthonormal_momentum=np.asarray(radial_orthonormal_velocity),
         phi=np.asarray(diagnostic_particles.phi),
         uphi=np.asarray(diagnostic_particles.uphi),
         weight=np.asarray(diagnostic_particles.weight),
@@ -683,6 +697,7 @@ def write_schwarzschild_snapshot(
         species_name=diagnostic_particles.name,
         saved_coordinates="schwarzschild_isotropic_diagnostic",
         particle_state_variables="rs_ubar",
+        particle_ubar_definition="alpha*ur*sqrt(chi/conformal_grr)",
     )
 
     return float(X_r), float(X_t), float(outer_metric_mismatch)
@@ -737,7 +752,7 @@ def run_simulation(args):
         particle_state_variables="rs_ubar",
         # This definition distinguishes new snapshots from legacy rs_ubar runs.
         particle_rs_definition="r/sqrt(chi*sqrt(conformal_grr))",
-        particle_ubar_definition="ur*sqrt(chi/conformal_grr)",
+        particle_ubar_definition="alpha*ur*sqrt(chi/conformal_grr)",
     )
 
     step = 0

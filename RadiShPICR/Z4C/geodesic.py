@@ -38,6 +38,58 @@ def _areal_radius_coordinates(metric: Z4C_Metric):
     return isotropic_radius, areal_radius
 
 
+def _origin_branch_isotropic_radius(rs, metric: Z4C_Metric):
+    """Invert ``R(r)`` on the strictly increasing branch from the origin."""
+
+    r_grid, rs_grid = _areal_radius_coordinates(metric)
+
+    edge_indices = jnp.arange(rs_grid.size - 1)
+    increasing_edge = jnp.logical_and(
+        jnp.isfinite(rs_grid[:-1]),
+        jnp.logical_and(
+            jnp.isfinite(rs_grid[1:]),
+            jnp.diff(rs_grid) > 0.0,
+        ),
+    )
+    branch_end_index = jnp.min(
+        jnp.where(increasing_edge, rs_grid.size - 1, edge_indices)
+    )
+    # If every edge is increasing, the branch ends at the outermost point.
+    # Otherwise it ends immediately before the first flat or decreasing edge.
+
+    grid_indices = jnp.arange(rs_grid.size)
+    origin_branch_rs = jnp.where(
+        grid_indices <= branch_end_index,
+        rs_grid,
+        jnp.inf,
+    )
+    upper_index = jnp.searchsorted(origin_branch_rs, rs, side="right")
+    upper_index = jnp.clip(upper_index, 1, jnp.maximum(branch_end_index, 1))
+    lower_index = upper_index - 1
+
+    delta_rs = rs_grid[upper_index] - rs_grid[lower_index]
+    valid_interval = jnp.logical_and(
+        upper_index <= branch_end_index,
+        delta_rs > 0.0,
+    )
+    safe_delta_rs = jnp.where(valid_interval, delta_rs, 1.0)
+    fraction = (rs - rs_grid[lower_index]) / safe_delta_rs
+    r_particle = r_grid[lower_index] + fraction * (
+        r_grid[upper_index] - r_grid[lower_index]
+    )
+
+    valid_radius = jnp.logical_and(
+        branch_end_index > 0,
+        jnp.logical_and(
+            jnp.isfinite(rs),
+            jnp.logical_and(rs >= 0.0, rs <= rs_grid[branch_end_index]),
+        ),
+    )
+    r_particle = jnp.where(valid_radius, r_particle, jnp.nan)
+
+    return r_particle, valid_radius
+
+
 def isotropic_particle_state(particles, metric: Z4C_Metric):
     """Convert stored lapse-freezing variables to isotropic ``r`` and ``u_r``."""
 
@@ -45,20 +97,10 @@ def isotropic_particle_state(particles, metric: Z4C_Metric):
     ubar, _ = particles.get_velocities()
     grid = _radial_grid_from_metric(metric)
 
-    r_grid, rs_grid = _areal_radius_coordinates(metric)
-    r_particle = jnp.interp(
-        rs,
-        rs_grid,
-        r_grid,
-        left=jnp.nan,
-        right=jnp.nan,
-    )
-    valid_map = jnp.all(jnp.diff(rs_grid) > 0.0)
-    valid_radius = (rs >= 0.0) & (rs <= rs_grid[-1])
-    valid_state = valid_map & valid_radius
-    r_particle = jnp.where(valid_state, r_particle, jnp.nan)
+    r_particle, valid_state = _origin_branch_isotropic_radius(rs, metric)
     # The explicit origin preserves valid particles inside the first
-    # cell-centered metric point while rejecting negative radii.
+    # cell-centered metric point. A turnover beyond a particle no longer
+    # invalidates its local inverse map.
 
     interpolation_radius = jnp.where(valid_state, r_particle, 0.0)
     (
@@ -83,9 +125,8 @@ def lapse_freezing_particle_state(r_particle, ur, metric, shape_mode):
 
     grid = _radial_grid_from_metric(metric)
     r_grid, rs_grid = _areal_radius_coordinates(metric)
-    valid_map = jnp.all(jnp.diff(rs_grid) > 0.0)
     valid_radius = (r_particle >= 0.0) & (r_particle <= r_grid[-1])
-    valid_state = valid_map & valid_radius
+    valid_state = valid_radius
     interpolation_radius = jnp.where(valid_state, r_particle, 0.0)
 
     rs = jnp.interp(
