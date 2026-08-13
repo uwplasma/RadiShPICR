@@ -39,9 +39,8 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 from RadiShPICR.Z4C.geodesic import (
-    compute_normal_geodesic_terms,
+    isotropic_particle_state,
     lapse_freezing_particle_state,
-    normal_particle_state,
 )
 from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
@@ -49,7 +48,6 @@ from RadiShPICR.particles import particle_species
 
 
 calculate_metric_jit = jax.jit(calculate_metric)
-compute_normal_geodesic_terms_jit = jax.jit(compute_normal_geodesic_terms)
 compute_radial_matter_terms_jit = jax.jit(compute_radial_matter_terms)
 particles_rk4_step_jit = jax.jit(particles_rk4_step)
 
@@ -444,14 +442,14 @@ def rescale_z4c_to_schwarzschild_coordinates(
         dr=metric.dr * X_r,
     )
 
-    # Under r -> X_r r and chi -> X_r**2 chi, the lapse-freezing
-    # coordinate transforms as rs -> rs / sqrt(X_r), while ubar is invariant.
+    # Under r -> X_r r and chi -> X_r**2 chi, both the areal radius
+    # R = r / sqrt(chi * sqrt(conformal_grr)) and ubar are invariant.
     diagnostic_particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=particles.r / jnp.sqrt(X_r),
+        r=particles.r,
         ur=particles.ur,
         phi=particles.phi,
         uphi=particles.uphi,
@@ -584,15 +582,6 @@ def freefall_collapse_time_step(particles, metric):
     return FREE_FALL_FRACTION * math.sqrt(3.0 * math.pi / (32.0 * rho_max))
 
 
-def particle_crossing_time_step(particles, metric, crossing_fraction=0.25):
-    _, _, dr_dt, _ = compute_normal_geodesic_terms_jit(particles, metric)
-    maximum_speed = float(np.max(np.abs(np.asarray(dr_dt))))
-    if maximum_speed == 0.0:
-        return math.inf
-
-    return crossing_fraction * float(metric.dr) / maximum_speed
-
-
 def prepare_output_directory(output_directory):
     output_directory = Path(output_directory)
     if output_directory.exists() and any(output_directory.iterdir()):
@@ -635,15 +624,13 @@ def write_schwarzschild_snapshot(
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
     areal_radius = diagnostic_metric.r * jnp.sqrt(gT)
-    particle_r, particle_ur = normal_particle_state(
+    particle_r, particle_ur = isotropic_particle_state(
         diagnostic_particles,
         diagnostic_metric,
     )
-    particle_areal_radius = jnp.interp(
-        particle_r,
-        diagnostic_metric.r,
-        areal_radius,
-    )
+    particle_areal_radius = diagnostic_particles.r
+    # The evolved particle coordinate is already the areal radius. Keeping the
+    # saved diagnostic equal to rs avoids introducing a second interpolation.
 
     metric_path = Path(metric_directory) / f"metric_step_{step:06d}.npz"
     np.savez_compressed(
@@ -748,7 +735,8 @@ def run_simulation(args):
         constrained_outer_X_t=float(initial_X_t),
         target_schwarzschild_time=float(args.target_time),
         particle_state_variables="rs_ubar",
-        particle_rs_definition="r/chi**(3/4)",
+        # This definition distinguishes new snapshots from legacy rs_ubar runs.
+        particle_rs_definition="r/sqrt(chi*sqrt(conformal_grr))",
         particle_ubar_definition="ur*sqrt(chi/conformal_grr)",
     )
 
@@ -781,11 +769,9 @@ def run_simulation(args):
             )
             cfl_dt = args.cfl * float(metric.dr)
             freefall_dt = freefall_collapse_time_step(particles, metric)
-            crossing_dt = particle_crossing_time_step(particles, metric)
             trial_dt = min(
                 cfl_dt,
                 freefall_dt,
-                crossing_dt,
                 remaining_schwarzschild_time / X_t,
             )
 
