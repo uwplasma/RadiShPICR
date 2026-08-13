@@ -150,6 +150,37 @@ def _unbounded_raw_radial_shape_stencil(
     return raw_indices, raw_weights
 
 
+def _cell_centered_radial_shape_stencil(
+    radial_positions,
+    radial_grid,
+    dr,
+    shape_mode,
+):
+    """Fold compact weights across a half-cell-centered parity origin."""
+
+    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
+        radial_positions,
+        radial_grid,
+        dr,
+        shape_mode=shape_mode,
+    )
+
+    reflected_indices = jnp.where(
+        raw_indices < 0,
+        -raw_indices - 1,
+        raw_indices,
+    )
+    valid = reflected_indices < radial_grid.shape[0]
+    indices = jnp.clip(reflected_indices, 0, radial_grid.shape[0] - 1)
+
+    even_weights = jnp.where(valid, raw_weights, 0.0)
+    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
+    odd_weights = even_weights * reflection_sign
+    origin_stencil = jnp.any(raw_indices < 0, axis=0)
+
+    return indices, even_weights, odd_weights, origin_stencil
+
+
 @partial(jax.jit, static_argnames=("shape_mode",))
 def unbounded_radial_shape_stencil(
     radial_positions,
@@ -250,6 +281,82 @@ def interpolate_fields_to_particles(
         return jnp.sum(field[indices] * weights, axis=0)
 
     return jax.vmap(interpolate_one_field)(fields, field_parities)
+
+
+@partial(jax.jit, static_argnames=("shape_mode",))
+def _interpolate_cell_centered_fields_to_particles(
+    fields,
+    radial_positions,
+    grid,
+    shape_mode="nearest",
+    field_parities=None,
+):
+    """Interpolate fields across a half-cell-centered parity origin."""
+
+    fields = jnp.asarray(fields)
+    if field_parities is None:
+        field_parities = jnp.ones(fields.shape[0], dtype=fields.dtype)
+    else:
+        field_parities = jnp.asarray(field_parities, dtype=fields.dtype)
+
+    if shape_mode == "nearest":
+        reflected_positions = jnp.abs(radial_positions)
+        interpolated_fields = jax.vmap(
+            lambda field: jnp.interp(reflected_positions, grid.r_full, field)
+        )(fields)
+
+        first_radius = grid.r_full[0]
+        center_fraction = reflected_positions / first_radius
+        center_values = jnp.where(
+            field_parities[:, jnp.newaxis] < 0.0,
+            fields[:, :1] * center_fraction[jnp.newaxis, :],
+            fields[:, :1],
+        )
+        interpolated_fields = jnp.where(
+            reflected_positions[jnp.newaxis, :] < first_radius,
+            center_values,
+            interpolated_fields,
+        )
+
+        reflection_sign = jnp.where(
+            radial_positions[jnp.newaxis, :] < 0.0,
+            field_parities[:, jnp.newaxis],
+            1.0,
+        )
+
+        return reflection_sign * interpolated_fields
+
+    # Keep the existing clipping and outer-boundary behavior when the raw
+    # stencil never crosses the half-cell origin.
+    existing_interpolation = interpolate_fields_to_particles(
+        fields,
+        radial_positions,
+        grid,
+        shape_mode=shape_mode,
+    )
+    indices, even_weights, odd_weights, origin_stencil = (
+        _cell_centered_radial_shape_stencil(
+            radial_positions,
+            grid.r_full,
+            grid.dr,
+            shape_mode,
+        )
+    )
+    field_weights = jnp.where(
+        field_parities[:, jnp.newaxis, jnp.newaxis] < 0.0,
+        odd_weights[jnp.newaxis, :, :],
+        even_weights[jnp.newaxis, :, :],
+    )
+    origin_interpolation = jnp.sum(
+        fields[:, indices] * field_weights,
+        axis=1,
+    )
+
+    return jnp.where(
+        origin_stencil[jnp.newaxis, :],
+        origin_interpolation,
+        existing_interpolation,
+    )
 
 
 def shape_weights_at_point(

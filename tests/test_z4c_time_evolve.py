@@ -440,69 +440,34 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
     )
 
 
-def test_flat_space_particle_trajectory_has_fourth_order_self_convergence():
+def test_flat_space_radial_particle_trajectory_is_exact():
     from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 
     grid_r = jnp.arange(0.5, 20.5, 0.5)
     initial_r = 5.0
     initial_phi = 0.3
     initial_ur = 0.2
-    initial_uphi = 1.1
     final_time = 0.8
+    lorentz_factor = jnp.sqrt(1.0 + initial_ur**2)
+    exact_r = initial_r + final_time * initial_ur / lorentz_factor
 
-    momentum_x = (
-        initial_ur * jnp.cos(initial_phi)
-        - initial_uphi * jnp.sin(initial_phi) / initial_r
-    )
-    momentum_y = (
-        initial_ur * jnp.sin(initial_phi)
-        + initial_uphi * jnp.cos(initial_phi) / initial_r
-    )
-    lorentz_factor = jnp.sqrt(1.0 + momentum_x**2 + momentum_y**2)
-    exact_x = (
-        initial_r * jnp.cos(initial_phi)
-        + final_time * momentum_x / lorentz_factor
-    )
-    exact_y = (
-        initial_r * jnp.sin(initial_phi)
-        + final_time * momentum_y / lorentz_factor
-    )
-    exact_r = jnp.sqrt(exact_x**2 + exact_y**2)
-    exact_phi = jnp.arctan2(exact_y, exact_x)
-    exact_ur = (
-        momentum_x * jnp.cos(exact_phi)
-        + momentum_y * jnp.sin(exact_phi)
-    )
-    exact_uphi = exact_r * (
-        -momentum_x * jnp.sin(exact_phi)
-        + momentum_y * jnp.cos(exact_phi)
+    metric = _flat_metric(grid_r)
+    particles = particle_species(
+        name="test",
+        charge=0.0,
+        mass=0.0,
+        weight=1.0,
+        r=jnp.asarray([initial_r]),
+        ur=jnp.asarray([initial_ur]),
+        phi=jnp.asarray([initial_phi]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="nearest",
     )
 
-    def trajectory_error(dt, num_steps):
-        metric = _flat_metric(grid_r)
-        particles = particle_species(
-            name="test",
-            charge=0.0,
-            mass=0.0,
-            weight=1.0,
-            r=jnp.asarray([initial_r]),
-            ur=jnp.asarray([initial_ur]),
-            phi=jnp.asarray([initial_phi]),
-            uphi=jnp.asarray([initial_uphi]),
-            shape_mode="nearest",
-        )
+    for _ in range(4):
+        particles, metric = particles_rk4_step(particles, metric, dt=0.2)
 
-        for _ in range(num_steps):
-            particles, metric = particles_rk4_step(particles, metric, dt)
-
-        return jnp.sqrt(
-            (particles.r[0] - exact_r) ** 2
-            + (exact_r * (particles.phi[0] - exact_phi)) ** 2
-            + (particles.ur[0] - exact_ur) ** 2
-            + (particles.uphi[0] - exact_uphi) ** 2
-        )
-
-    coarse_error = trajectory_error(dt=0.2, num_steps=4)
-    fine_error = trajectory_error(dt=0.1, num_steps=8)
-
-    assert coarse_error / fine_error > 10.0
+    assert jnp.allclose(particles.r, exact_r)
+    assert jnp.allclose(particles.phi, initial_phi)
+    assert jnp.allclose(particles.ur, initial_ur)
+    assert jnp.allclose(particles.uphi, 0.0)

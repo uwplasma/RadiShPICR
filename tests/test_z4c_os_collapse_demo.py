@@ -4,15 +4,20 @@ import numpy as np
 from demos.oppenheimer_snyder_collapse_z4c import (
     run_oppenheimer_snyder_z4c as os_z4c,
 )
+from RadiShPICR.ConstraintBasedRelativity.geodesic import (
+    compute_geodesic_terms as compute_constrained_geodesic_terms,
+)
 from RadiShPICR.Z4C.geodesic import (
+    compute_geodesic_terms as compute_z4c_geodesic_terms,
+    isotropic_particle_state,
     lapse_freezing_particle_state,
-    normal_particle_state,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     _proper_radial_shell_volume,
     compute_radial_matter_terms,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
+from RadiShPICR.Z4C.time_evolve import metric_time_derivatives
 from RadiShPICR.particles import particle_species
 
 
@@ -79,12 +84,12 @@ def test_schwarzschild_rescaling_preserves_lapse_freezing_particle_state(
             exterior_mass=1.0,
         )
     )
-    diagnostic_r, diagnostic_ur = normal_particle_state(
+    diagnostic_r, diagnostic_ur = isotropic_particle_state(
         diagnostic_particles,
         diagnostic_metric,
     )
 
-    assert jnp.allclose(diagnostic_particles.r, particles.r / jnp.sqrt(X_r))
+    assert jnp.allclose(diagnostic_particles.r, particles.r)
     assert jnp.allclose(diagnostic_particles.ur, particles.ur)
     assert jnp.allclose(diagnostic_r, jnp.asarray([1.0, 2.0, 3.0]) * X_r)
     assert jnp.allclose(diagnostic_ur, jnp.asarray([0.2, -0.1, 0.05]) / X_r)
@@ -129,6 +134,7 @@ def test_z4c_snapshot_writes_solver_and_common_comparison_variables(
         assert str(snapshot["particle_state_variables"]) == "rs_ubar"
         assert np.allclose(snapshot["rs"], particles.r)
         assert np.allclose(snapshot["ubar"], particles.ur)
+        assert np.allclose(snapshot["rs"], snapshot["areal_radius"])
         assert np.allclose(snapshot["areal_radius"], snapshot["r"])
         assert np.allclose(
             snapshot["radial_orthonormal_momentum"],
@@ -137,11 +143,13 @@ def test_z4c_snapshot_writes_solver_and_common_comparison_variables(
 
 
 def test_reduced_os_initial_state_deposits_total_particle_energy():
-    metric, particles, _, _, total_rest_mass = os_z4c.build_initial_state(
-        r_max=20.0,
-        num_z4c_cells=199,
-        particles_per_shell=1,
-        shooting_iterations=1,
+    metric, particles, constrained_U_state, _, total_rest_mass = (
+        os_z4c.build_initial_state(
+            r_max=20.0,
+            num_z4c_cells=199,
+            particles_per_shell=1,
+            shooting_iterations=1,
+        )
     )
 
     matter_terms = compute_radial_matter_terms(particles, metric)
@@ -152,3 +160,38 @@ def test_reduced_os_initial_state_deposits_total_particle_energy():
     assert jnp.allclose(particle_energy, total_rest_mass)
     assert jnp.allclose(deposited_energy, particle_energy)
     assert jnp.max(matter_terms.rho) > 1.0e-4
+
+    r_particle, ur = isotropic_particle_state(particles, metric)
+    A_at_particle = jnp.interp(
+        r_particle,
+        constrained_U_state[-1],
+        constrained_U_state[0],
+    )
+    constrained_particles = particle_species(
+        name=particles.name,
+        charge=particles.charges,
+        mass=particles.masses,
+        weight=particles.weight,
+        r=particles.r,
+        ur=ur / A_at_particle,
+        phi=particles.phi,
+        uphi=particles.uphi,
+        shape_mode=particles.shape_mode,
+    )
+    _, _, constrained_dubar_dt = compute_constrained_geodesic_terms(
+        constrained_particles,
+        constrained_U_state,
+    )
+    z4c_dubar_dt, _, _, _ = compute_z4c_geodesic_terms(
+        particles,
+        metric,
+        metric_time_derivatives(metric, matter_terms),
+    )
+
+    inner_particles = r_particle < metric.r[0]
+    relative_discrepancy = jnp.abs(
+        (z4c_dubar_dt - constrained_dubar_dt) / constrained_dubar_dt
+    )
+
+    assert jnp.any(inner_particles)
+    assert jnp.max(relative_discrepancy[inner_particles]) < 1.0e-3

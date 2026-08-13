@@ -1,7 +1,9 @@
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
+from RadiShPICR.particles.particle_shapes import (
+    _interpolate_cell_centered_fields_to_particles,
+)
 from RadiShPICR.Z4C.derivatives import first_derivative
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -59,11 +61,12 @@ def isotropic_particle_state(particles, metric: Z4C_Metric):
     # cell-centered metric point while rejecting negative radii.
 
     interpolation_radius = jnp.where(valid_state, r_particle, 0.0)
-    chi_p, conformal_grr_p = interpolate_fields_to_particles(
+    chi_p, conformal_grr_p = _interpolate_cell_centered_fields_to_particles(
         jnp.stack((metric.chi, metric.conformal_grr)),
         interpolation_radius,
         grid,
         shape_mode=particles.get_shape(),
+        field_parities=jnp.asarray((1, 1)),
     )
     ur = ubar * jnp.sqrt(conformal_grr_p / chi_p)
     ur = jnp.where(valid_state, ur, jnp.nan)
@@ -88,11 +91,12 @@ def lapse_freezing_particle_state(r_particle, ur, metric, shape_mode):
     )
     rs = jnp.where(valid_state, rs, jnp.nan)
 
-    chi_p, conformal_grr_p = interpolate_fields_to_particles(
+    chi_p, conformal_grr_p = _interpolate_cell_centered_fields_to_particles(
         jnp.stack((metric.chi, metric.conformal_grr)),
         interpolation_radius,
         grid,
         shape_mode=shape_mode,
+        field_parities=jnp.asarray((1, 1)),
     )
     ubar = ur * jnp.sqrt(chi_p / conformal_grr_p)
     ubar = jnp.where(valid_state, ubar, jnp.nan)
@@ -202,7 +206,7 @@ def compute_geodesic_terms(
         dgrrdr_p,
         dchidt_p,
         dgrrdt_p,
-    ) = interpolate_fields_to_particles(
+    ) = _interpolate_cell_centered_fields_to_particles(
         jnp.stack(
             (
                 metric.alpha,
@@ -224,6 +228,9 @@ def compute_geodesic_terms(
         r_particle,
         grid,
         shape_mode=particle_shape,
+        field_parities=jnp.asarray(
+            (1, -1, 1, 1, -1, 1, -1, -1, 1, 1)
+        ),
     )
 
     # Explicit shift-aware equations generated in LapseFreezingZ4C.nb.

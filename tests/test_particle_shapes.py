@@ -10,6 +10,7 @@ from RadiShPICR.ConstraintBasedRelativity.utils import (
 )
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
+    _interpolate_cell_centered_fields_to_particles,
     interpolate_field_to_particles,
     interpolate_fields_to_particles,
     radial_shape_stencil,
@@ -294,6 +295,79 @@ def test_origin_parity_interpolation_matches_even_and_odd_fields():
         assert jnp.allclose(even_values[0], even_values[2])
         assert jnp.allclose(odd_values[0], -odd_values[2])
         assert odd_values[1] == 0.0
+
+
+def test_cell_centered_interpolation_respects_origin_parity_and_jit():
+    radial_grid = 0.5 + jnp.arange(8.0)
+    grid = RadialGrid(
+        r_full=radial_grid,
+        r_interior=radial_grid,
+        dr=1.0,
+        r_max=radial_grid[-1],
+    )
+    radial_positions = jnp.asarray(
+        [-1.25, -0.49, -0.1, 0.0, 0.1, 0.49, 1.25]
+    )
+    fields = jnp.stack((jnp.ones_like(radial_grid), radial_grid))
+    parities = jnp.asarray((1, -1))
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        eager = _interpolate_cell_centered_fields_to_particles(
+            fields,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            field_parities=parities,
+        )
+        compiled = jax.jit(
+            _interpolate_cell_centered_fields_to_particles,
+            static_argnames=("shape_mode",),
+        )(
+            fields,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            field_parities=parities,
+        )
+
+        assert jnp.allclose(eager[0], 1.0)
+        assert jnp.allclose(eager[1], radial_positions)
+        assert eager[1, 3] == 0.0
+        assert jnp.allclose(compiled, eager)
+
+
+def test_cell_centered_interpolation_preserves_non_origin_gather():
+    radial_grid = 0.5 + jnp.arange(8.0)
+    grid = RadialGrid(
+        r_full=radial_grid,
+        r_interior=radial_grid,
+        dr=1.0,
+        r_max=radial_grid[-1],
+    )
+    radial_positions = jnp.asarray([2.25, 4.75, 7.25])
+    fields = jnp.stack(
+        (
+            1.0 + 0.2 * radial_grid,
+            jnp.sin(radial_grid),
+        )
+    )
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        expected = interpolate_fields_to_particles(
+            fields,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+        )
+        actual = _interpolate_cell_centered_fields_to_particles(
+            fields,
+            radial_positions,
+            grid,
+            shape_mode=shape_mode,
+            field_parities=jnp.asarray((1, -1)),
+        )
+
+        assert jnp.allclose(actual, expected)
 
 
 def test_unbounded_compact_stencil_matches_pointwise_shape_weights():

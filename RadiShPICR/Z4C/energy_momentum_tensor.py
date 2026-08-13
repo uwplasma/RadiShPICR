@@ -8,8 +8,8 @@ from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
 from RadiShPICR.Z4C.geodesic import isotropic_particle_state
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles.particle_shapes import (
-    _unbounded_raw_radial_shape_stencil,
-    interpolate_fields_to_particles,
+    _cell_centered_radial_shape_stencil,
+    _interpolate_cell_centered_fields_to_particles,
 )
 
 
@@ -69,35 +69,6 @@ def _proper_radial_shell_volume(metric):
     return coordinate_volume * proper_volume_factor
 
 
-def _cell_centered_radial_shape_stencil(
-    radial_positions,
-    metric,
-    shape_mode,
-):
-    """Fold compact source weights across the cell-centered parity origin."""
-
-    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
-        radial_positions,
-        metric.r,
-        metric.dr,
-        shape_mode=shape_mode,
-    )
-
-    reflected_indices = jnp.where(
-        raw_indices < 0,
-        -raw_indices - 1,
-        raw_indices,
-    )
-    valid = reflected_indices < metric.r.shape[0]
-    indices = jnp.clip(reflected_indices, 0, metric.r.shape[0] - 1)
-
-    even_weights = jnp.where(valid, raw_weights, 0.0)
-    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
-    odd_weights = even_weights * reflection_sign
-
-    return indices, even_weights, odd_weights
-
-
 def _radial_matter_deposition_data(particles, metric):
     r_particle, ur = isotropic_particle_state(particles, metric)
     _, uphi = particles.get_velocities()
@@ -105,7 +76,7 @@ def _radial_matter_deposition_data(particles, metric):
 
     chi = metric.chi
     grid = _radial_grid_from_metric(metric)
-    grr_p, gt_p = interpolate_fields_to_particles(
+    grr_p, gt_p = _interpolate_cell_centered_fields_to_particles(
         jnp.stack(
             (
                 metric.conformal_grr / chi,
@@ -115,6 +86,7 @@ def _radial_matter_deposition_data(particles, metric):
         r_particle,
         grid,
         shape_mode=particle_shape,
+        field_parities=jnp.asarray((1, 1)),
     )
     gamma_rr_inv_p = 1.0 / grr_p
 
@@ -141,9 +113,10 @@ def _radial_matter_deposition_data(particles, metric):
     )
     particle_mass = particles.get_mass()
 
-    indices, even_weights, odd_weights = _cell_centered_radial_shape_stencil(
+    indices, even_weights, odd_weights, _ = _cell_centered_radial_shape_stencil(
         r_particle,
-        metric,
+        metric.r,
+        metric.dr,
         particle_shape,
     )
     rho_numerator = particle_mass * lorentz_factor
