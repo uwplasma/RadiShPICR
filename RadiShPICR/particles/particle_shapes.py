@@ -111,14 +111,13 @@ def radial_shape_stencil(radial_positions, grid, shape_mode="nearest", parity=1)
     return indices, weights
 
 
-@partial(jax.jit, static_argnames=("shape_mode",))
-def unbounded_radial_shape_stencil(
+def _unbounded_raw_radial_shape_stencil(
     radial_positions,
     radial_grid,
     dr,
     shape_mode="nearest",
 ):
-    """Return compact weights without boundary clipping or renormalization."""
+    """Return raw compact radial indices and weights before boundary handling."""
 
     floating_index = (radial_positions - radial_grid[0]) / dr
 
@@ -148,6 +147,24 @@ def unbounded_radial_shape_stencil(
         )
         raw_weights = _quadratic_shape_weight(delta)
 
+    return raw_indices, raw_weights
+
+
+@partial(jax.jit, static_argnames=("shape_mode",))
+def unbounded_radial_shape_stencil(
+    radial_positions,
+    radial_grid,
+    dr,
+    shape_mode="nearest",
+):
+    """Return compact weights without boundary clipping or renormalization."""
+
+    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
+        radial_positions,
+        radial_grid,
+        dr,
+        shape_mode=shape_mode,
+    )
     valid = jnp.logical_and(
         raw_indices >= 0,
         raw_indices < radial_grid.shape[0],

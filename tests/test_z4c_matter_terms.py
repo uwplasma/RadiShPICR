@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
@@ -8,6 +9,7 @@ from RadiShPICR.particles.particle_shapes import (
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
+    _proper_radial_shell_volume,
     compute_radial_momentum_density,
     compute_radial_stress_tensor_component,
     compute_radial_matter_terms,
@@ -85,7 +87,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
     )
 
     for shape_mode in ("nearest", "linear", "quadratic"):
-        r_particle = jnp.asarray([0.75, 2.25, 5.25])
+        r_particle = jnp.asarray([1.75, 2.25, 4.25])
         ur = jnp.asarray([0.4, -0.2, 0.7])
         rs, ubar = lapse_freezing_particle_state(
             r_particle,
@@ -105,13 +107,6 @@ def test_sparse_matter_deposition_matches_dense_reference():
             shape_mode=shape_mode,
         )
 
-        scaling_factor = jnp.sqrt(1.0 / metric.chi**3)
-        scaling_factor_p = interpolate_field_to_particles(
-            scaling_factor,
-            r_particle,
-            grid,
-            shape_mode=shape_mode,
-        )
         grr_p = interpolate_field_to_particles(
             metric.conformal_grr / metric.chi,
             r_particle,
@@ -124,7 +119,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
             grid,
             shape_mode=shape_mode,
         )
-        particle_volume = 4.0 * jnp.pi * r_particle**2 * scaling_factor_p
+        proper_shell_volume = _proper_radial_shell_volume(metric)
         gamma_rr_inv_p = 1.0 / grr_p
         lorentz_factor = jnp.sqrt(
             1.0
@@ -138,48 +133,69 @@ def test_sparse_matter_deposition_matches_dense_reference():
             shape_mode=shape_mode,
         )
         particle_mass = particles.get_mass()
-        expected_rho = jnp.sum(
-            weights
-            * particle_mass
-            * lorentz_factor
-            / particle_volume,
-            axis=1,
+        expected_rho = (
+            jnp.sum(weights * particle_mass * lorentz_factor, axis=1)
+            / proper_shell_volume
         )
-        expected_Srr = jnp.sum(
-            weights
-            * particle_mass
-            * ur**2
-            / (particle_volume * lorentz_factor),
-            axis=1,
+        expected_Srr = (
+            jnp.sum(
+                weights * particle_mass * ur**2 / lorentz_factor,
+                axis=1,
+            )
+            / proper_shell_volume
         )
-        expected_Stt = jnp.sum(
-            weights
-            * particle_mass
-            * particles.uphi**2
-            / (
-                2.0
-                * r_particle**2
-                * particle_volume
-                * lorentz_factor
-            ),
-            axis=1,
+        expected_Stt = (
+            jnp.sum(
+                weights
+                * particle_mass
+                * particles.uphi**2
+                / (2.0 * r_particle**2 * lorentz_factor),
+                axis=1,
+            )
+            / proper_shell_volume
         )
-        expected_Sr = jnp.sum(
-            weights
-            * particle_mass
-            * gamma_rr_inv_p
-            * ur
-            / particle_volume,
-            axis=1,
+        expected_Sr = (
+            jnp.sum(
+                weights * particle_mass * gamma_rr_inv_p * ur,
+                axis=1,
+            )
+            / proper_shell_volume
         )
 
         matter_terms = compute_radial_matter_terms(particles, metric)
+        compiled_matter_terms = jax.jit(compute_radial_matter_terms)(
+            particles,
+            metric,
+        )
 
         assert jnp.allclose(matter_terms.rho, expected_rho)
         assert jnp.allclose(matter_terms.Srr, expected_Srr)
         assert jnp.allclose(matter_terms.Stt, expected_Stt)
         assert jnp.allclose(matter_terms.Sr, expected_Sr)
         assert jnp.allclose(matter_terms.St, 0.0)
+        for actual, compiled in zip(matter_terms, compiled_matter_terms):
+            assert jnp.allclose(actual, compiled)
+
+        assert jnp.allclose(
+            jnp.sum(matter_terms.rho * proper_shell_volume),
+            jnp.sum(particle_mass * lorentz_factor),
+        )
+        assert jnp.allclose(
+            jnp.sum(matter_terms.Srr * proper_shell_volume),
+            jnp.sum(particle_mass * ur**2 / lorentz_factor),
+        )
+        assert jnp.allclose(
+            jnp.sum(matter_terms.Stt * proper_shell_volume),
+            jnp.sum(
+                particle_mass
+                * particles.uphi**2
+                / (2.0 * r_particle**2 * lorentz_factor)
+            ),
+        )
+        assert jnp.allclose(
+            jnp.sum(matter_terms.Sr * proper_shell_volume),
+            jnp.sum(particle_mass * gamma_rr_inv_p * ur),
+        )
         assert jnp.allclose(
             relativistic_mass_energy_density(particles, metric),
             expected_rho,
@@ -248,7 +264,7 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
         + gamma_rr_inv * ur[0] ** 2
         + gamma_t_inv * particles.uphi[0] ** 2 / rp**2
     )
-    particle_volume = 4.0 * jnp.pi * rp**2 / chi[particle_index] ** 1.5
+    proper_shell_volume = _proper_radial_shell_volume(metric)[particle_index]
     particle_mass = particles.get_mass()[0]
     stress_trace = (
         gamma_rr_inv * matter_terms.Srr[particle_index]
@@ -257,7 +273,7 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
     expected_trace = (
         particle_mass
         * (lorentz_factor**2 - 1.0)
-        / (particle_volume * lorentz_factor)
+        / (proper_shell_volume * lorentz_factor)
     )
 
     assert jnp.allclose(stress_trace, expected_trace)
@@ -278,6 +294,143 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
 
     assert jnp.allclose(radial_matter_terms.Stt, 0.0)
     assert jnp.allclose(radial_matter_terms.St, 0.0)
+
+
+def test_cell_centered_origin_deposition_uses_even_and_odd_parity():
+    r = jnp.arange(0.5, 5.5, 1.0)
+    zeros = jnp.zeros_like(r)
+    ones = jnp.ones_like(r)
+    metric = Z4C_Metric(
+        alpha=ones,
+        beta=zeros,
+        conformal_grr=ones,
+        conformal_gt=ones,
+        chi=ones,
+        Kh=zeros,
+        Arr=zeros,
+        At=zeros,
+        theta=zeros,
+        Gamma=zeros,
+        kappa=zeros,
+        eta=zeros,
+        nu=zeros,
+        r=r,
+        dr=r[1] - r[0],
+    )
+    r_particle = r[:1]
+    ur = jnp.ones_like(r_particle)
+    lorentz_factor = jnp.sqrt(2.0)
+    proper_shell_volume = _proper_radial_shell_volume(metric)
+
+    expected_even_numerators = {
+        "nearest": jnp.asarray([1.0, 0.0]),
+        "linear": jnp.asarray([1.0, 0.0]),
+        "quadratic": jnp.asarray([0.875, 0.125]),
+    }
+    expected_odd_numerators = {
+        "nearest": jnp.asarray([1.0, 0.0]),
+        "linear": jnp.asarray([1.0, 0.0]),
+        "quadratic": jnp.asarray([0.625, 0.125]),
+    }
+
+    for shape_mode in ("nearest", "linear", "quadratic"):
+        rs, ubar = lapse_freezing_particle_state(
+            r_particle,
+            ur,
+            metric,
+            shape_mode,
+        )
+        particles = particle_species(
+            name="origin",
+            charge=0.0,
+            mass=1.0,
+            weight=1.0,
+            r=rs,
+            ur=ubar,
+            phi=zeros[:1],
+            uphi=zeros[:1],
+            shape_mode=shape_mode,
+        )
+        initial_rs = particles.r
+        initial_ubar = particles.ur
+
+        matter_terms = compute_radial_matter_terms(particles, metric)
+        deposited_energy = matter_terms.rho * proper_shell_volume
+        deposited_Srr = matter_terms.Srr * proper_shell_volume
+        deposited_Sr = matter_terms.Sr * proper_shell_volume
+
+        assert jnp.allclose(
+            deposited_energy[:2],
+            lorentz_factor * expected_even_numerators[shape_mode],
+        )
+        assert jnp.allclose(
+            deposited_Srr[:2],
+            expected_even_numerators[shape_mode] / lorentz_factor,
+        )
+        assert jnp.allclose(
+            deposited_Sr[:2],
+            expected_odd_numerators[shape_mode],
+        )
+        assert jnp.allclose(jnp.sum(deposited_energy), lorentz_factor)
+        assert jnp.allclose(particles.r, initial_rs)
+        assert jnp.allclose(particles.ur, initial_ubar)
+
+
+def test_uniform_density_is_grid_independent_including_inner_shell():
+    expected_density = 2.5
+
+    for dr in (0.5, 0.25):
+        r = jnp.arange(0.5 * dr, 4.0, dr)
+        zeros = jnp.zeros_like(r)
+        ones = jnp.ones_like(r)
+        metric = Z4C_Metric(
+            alpha=ones,
+            beta=zeros,
+            conformal_grr=ones,
+            conformal_gt=ones,
+            chi=ones,
+            Kh=zeros,
+            Arr=zeros,
+            At=zeros,
+            theta=zeros,
+            Gamma=zeros,
+            kappa=zeros,
+            eta=zeros,
+            nu=zeros,
+            r=r,
+            dr=jnp.asarray(dr),
+        )
+        proper_shell_volume = _proper_radial_shell_volume(metric)
+        rs, ubar = lapse_freezing_particle_state(
+            r,
+            zeros,
+            metric,
+            "nearest",
+        )
+        particles = particle_species(
+            name="uniform",
+            charge=0.0,
+            mass=1.0,
+            weight=expected_density * proper_shell_volume,
+            r=rs,
+            ur=ubar,
+            phi=zeros,
+            uphi=zeros,
+            shape_mode="nearest",
+        )
+
+        matter_terms = compute_radial_matter_terms(particles, metric)
+        compiled_rho = jax.jit(relativistic_mass_energy_density)(
+            particles,
+            metric,
+        )
+
+        assert jnp.allclose(matter_terms.rho, expected_density)
+        assert jnp.allclose(compiled_rho, expected_density)
+        assert jnp.allclose(
+            jnp.sum(matter_terms.rho * proper_shell_volume),
+            jnp.sum(particles.get_mass()),
+        )
 
 
 def test_tangential_stress_drives_extrinsic_curvature_sources():

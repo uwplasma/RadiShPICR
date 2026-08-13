@@ -8,8 +8,8 @@ from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
 from RadiShPICR.Z4C.geodesic import normal_particle_state
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles.particle_shapes import (
+    _unbounded_raw_radial_shape_stencil,
     interpolate_fields_to_particles,
-    unbounded_radial_shape_stencil,
 )
 
 
@@ -53,6 +53,51 @@ def initialize_vacuum_matter_terms(metric):
     )
 
 
+def _proper_radial_shell_volume(metric):
+    inner_radius = jnp.maximum(metric.r - 0.5 * metric.dr, 0.0)
+    outer_radius = metric.r + 0.5 * metric.dr
+    coordinate_volume = (4.0 * jnp.pi / 3.0) * (
+        outer_radius**3 - inner_radius**3
+    )
+
+    proper_volume_factor = (
+        jnp.sqrt(metric.conformal_grr)
+        * metric.conformal_gt
+        / metric.chi**1.5
+    )
+
+    return coordinate_volume * proper_volume_factor
+
+
+def _cell_centered_radial_shape_stencil(
+    radial_positions,
+    metric,
+    shape_mode,
+):
+    """Fold compact source weights across the cell-centered parity origin."""
+
+    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
+        radial_positions,
+        metric.r,
+        metric.dr,
+        shape_mode=shape_mode,
+    )
+
+    reflected_indices = jnp.where(
+        raw_indices < 0,
+        -raw_indices - 1,
+        raw_indices,
+    )
+    valid = reflected_indices < metric.r.shape[0]
+    indices = jnp.clip(reflected_indices, 0, metric.r.shape[0] - 1)
+
+    even_weights = jnp.where(valid, raw_weights, 0.0)
+    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
+    odd_weights = even_weights * reflection_sign
+
+    return indices, even_weights, odd_weights
+
+
 def _radial_matter_deposition_data(particles, metric):
     r_particle, ur = normal_particle_state(particles, metric)
     _, uphi = particles.get_velocities()
@@ -60,11 +105,9 @@ def _radial_matter_deposition_data(particles, metric):
 
     chi = metric.chi
     grid = _radial_grid_from_metric(metric)
-    scaling_factor = jnp.sqrt(1.0 / chi**3)
-    scaling_factor_p, grr_p, gt_p = interpolate_fields_to_particles(
+    grr_p, gt_p = interpolate_fields_to_particles(
         jnp.stack(
             (
-                scaling_factor,
                 metric.conformal_grr / chi,
                 metric.conformal_gt / chi,
             )
@@ -91,9 +134,6 @@ def _radial_matter_deposition_data(particles, metric):
         gt_p,
     )
 
-    particle_volume_element = (
-        4.0 * jnp.pi * r_particle**2 * scaling_factor_p
-    )
     lorentz_factor = jnp.sqrt(
         1.0
         + gamma_rr_inv_p * ur**2
@@ -101,40 +141,38 @@ def _radial_matter_deposition_data(particles, metric):
     )
     particle_mass = particles.get_mass()
 
-    indices, weights = unbounded_radial_shape_stencil(
+    indices, even_weights, odd_weights = _cell_centered_radial_shape_stencil(
         r_particle,
-        metric.r,
-        metric.dr,
-        shape_mode=particle_shape,
+        metric,
+        particle_shape,
     )
-    rho_contribution = particle_mass * lorentz_factor / particle_volume_element
-    Srr_contribution = (
-        particle_mass * ur**2 / (particle_volume_element * lorentz_factor)
-    )
-    Stt_contribution = particle_mass * angular_stress / (
-        2.0 * particle_volume_element * lorentz_factor
-    )
-    Sr_contribution = (
-        particle_mass
-        * gamma_rr_inv_p
-        * ur
-        / particle_volume_element
-    )
+    rho_numerator = particle_mass * lorentz_factor
+    Srr_numerator = particle_mass * ur**2 / lorentz_factor
+    Stt_numerator = particle_mass * angular_stress / (2.0 * lorentz_factor)
+    Sr_numerator = particle_mass * gamma_rr_inv_p * ur
 
     return (
         indices,
-        weights,
-        rho_contribution,
-        Srr_contribution,
-        Stt_contribution,
-        Sr_contribution,
+        even_weights,
+        odd_weights,
+        rho_numerator,
+        Srr_numerator,
+        Stt_numerator,
+        Sr_numerator,
     )
 
 
-def _deposit_radial_particle_quantity(indices, weights, contribution, r):
-    return jnp.zeros_like(r).at[indices].add(
-        weights * contribution[jnp.newaxis, :]
+def _deposit_radial_particle_quantity(
+    indices,
+    weights,
+    numerator,
+    proper_shell_volume,
+):
+    deposited_numerator = jnp.zeros_like(proper_shell_volume).at[indices].add(
+        weights * numerator[jnp.newaxis, :]
     )
+
+    return deposited_numerator / proper_shell_volume
 
 
 def compute_radial_matter_terms(particles, metric: Z4C_Metric):
@@ -142,36 +180,38 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
 
     (
         indices,
-        weights,
-        rho_contribution,
-        Srr_contribution,
-        Stt_contribution,
-        Sr_contribution,
+        even_weights,
+        odd_weights,
+        rho_numerator,
+        Srr_numerator,
+        Stt_numerator,
+        Sr_numerator,
     ) = _radial_matter_deposition_data(particles, metric)
+    proper_shell_volume = _proper_radial_shell_volume(metric)
 
     rho = _deposit_radial_particle_quantity(
         indices,
-        weights,
-        rho_contribution,
-        metric.r,
+        even_weights,
+        rho_numerator,
+        proper_shell_volume,
     )
     Srr = _deposit_radial_particle_quantity(
         indices,
-        weights,
-        Srr_contribution,
-        metric.r,
+        even_weights,
+        Srr_numerator,
+        proper_shell_volume,
     )
     Stt = _deposit_radial_particle_quantity(
         indices,
-        weights,
-        Stt_contribution,
-        metric.r,
+        even_weights,
+        Stt_numerator,
+        proper_shell_volume,
     )
     Sr = _deposit_radial_particle_quantity(
         indices,
-        weights,
-        Sr_contribution,
-        metric.r,
+        odd_weights,
+        Sr_numerator,
+        proper_shell_volume,
     )
 
     return MatterTerms(
@@ -184,38 +224,38 @@ def compute_radial_matter_terms(particles, metric: Z4C_Metric):
 
 
 def relativistic_mass_energy_density(particles, metric: Z4C_Metric):
-    indices, weights, rho_contribution, _, _, _ = (
+    indices, even_weights, _, rho_numerator, _, _, _ = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
         indices,
-        weights,
-        rho_contribution,
-        metric.r,
+        even_weights,
+        rho_numerator,
+        _proper_radial_shell_volume(metric),
     )
 
 
 def compute_radial_momentum_density(particles, metric: Z4C_Metric):
-    indices, weights, _, _, _, Sr_contribution = (
+    indices, _, odd_weights, _, _, _, Sr_numerator = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
         indices,
-        weights,
-        Sr_contribution,
-        metric.r,
+        odd_weights,
+        Sr_numerator,
+        _proper_radial_shell_volume(metric),
     )
 
 
 def compute_radial_stress_tensor_component(particles, metric: Z4C_Metric):
-    indices, weights, _, Srr_contribution, _, _ = (
+    indices, even_weights, _, _, Srr_numerator, _, _ = (
         _radial_matter_deposition_data(particles, metric)
     )
     return _deposit_radial_particle_quantity(
         indices,
-        weights,
-        Srr_contribution,
-        metric.r,
+        even_weights,
+        Srr_numerator,
+        _proper_radial_shell_volume(metric),
     )
 
 
