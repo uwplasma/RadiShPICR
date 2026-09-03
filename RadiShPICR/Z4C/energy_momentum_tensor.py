@@ -5,7 +5,6 @@ import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
-from RadiShPICR.Z4C.geodesic import isotropic_particle_state
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles.particle_shapes import (
     _cell_centered_radial_shape_stencil,
@@ -70,8 +69,8 @@ def _proper_radial_shell_volume(metric):
 
 
 def _radial_matter_deposition_data(particles, metric):
-    r_particle, ur = isotropic_particle_state(particles, metric)
-    _, uphi = particles.get_velocities()
+    r_particle, _ = particles.get_positions()
+    ur, uphi = particles.get_velocities()
     particle_shape = particles.get_shape()
 
     chi = metric.chi

@@ -208,39 +208,39 @@ def particles_rk4_step(
     metric = _enforce_algebraic_constraints(metric)
     # Use the same projected metric for each stage's matter and particle RHS.
 
-    rs0, phi0 = particles.get_positions()
-    ubar0, uphi0 = particles.get_velocities()
+    r0, phi0 = particles.get_positions()
+    ur0, uphi0 = particles.get_velocities()
 
     matter_terms = compute_radial_matter_terms(particles, metric)
     k1_metric = metric_time_derivatives(metric, matter_terms)
-    k1_dubar_dt, k1_du_phi_dt, k1_drs_dt, k1_dphi_dt = (
-        compute_geodesic_terms(particles, metric, k1_metric)
+    k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt = (
+        compute_geodesic_terms(particles, metric)
     )
     # Stage 1 uses the beginning-of-step particles and metric.
 
     metric_k2 = _add_metric_derivative(metric, k1_metric, 0.5 * dt)
     particles_k2 = _copy_particle_state(
         particles,
-        rs0 + 0.5 * dt * k1_drs_dt,
+        r0 + 0.5 * dt * k1_dr_dt,
         phi0 + 0.5 * dt * k1_dphi_dt,
-        ubar0 + 0.5 * dt * k1_dubar_dt,
+        ur0 + 0.5 * dt * k1_du_r_dt,
         uphi0 + 0.5 * dt * k1_du_phi_dt,
     )
     if particle_boundary is not None:
         particles_k2 = particle_boundary(particles_k2)
     matter_terms_k2 = compute_radial_matter_terms(particles_k2, metric_k2)
     k2_metric = metric_time_derivatives(metric_k2, matter_terms_k2)
-    k2_dubar_dt, k2_du_phi_dt, k2_drs_dt, k2_dphi_dt = (
-        compute_geodesic_terms(particles_k2, metric_k2, k2_metric)
+    k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt = (
+        compute_geodesic_terms(particles_k2, metric_k2)
     )
     # Stage 2 deposits matter from the same half-step particles used by geodesics.
 
     metric_k3 = _add_metric_derivative(metric, k2_metric, 0.5 * dt)
     particles_k3 = _copy_particle_state(
         particles,
-        rs0 + 0.5 * dt * k2_drs_dt,
+        r0 + 0.5 * dt * k2_dr_dt,
         phi0 + 0.5 * dt * k2_dphi_dt,
-        ubar0 + 0.5 * dt * k2_dubar_dt,
+        ur0 + 0.5 * dt * k2_du_r_dt,
         uphi0 + 0.5 * dt * k2_du_phi_dt,
         weight=particles_k2.weight,
     )
@@ -248,17 +248,17 @@ def particles_rk4_step(
         particles_k3 = particle_boundary(particles_k3)
     matter_terms_k3 = compute_radial_matter_terms(particles_k3, metric_k3)
     k3_metric = metric_time_derivatives(metric_k3, matter_terms_k3)
-    k3_dubar_dt, k3_du_phi_dt, k3_drs_dt, k3_dphi_dt = (
-        compute_geodesic_terms(particles_k3, metric_k3, k3_metric)
+    k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt = (
+        compute_geodesic_terms(particles_k3, metric_k3)
     )
     # Stage 3 repeats the half-step update, now using k2 particle derivatives.
 
     metric_k4 = _add_metric_derivative(metric, k3_metric, dt)
     particles_k4 = _copy_particle_state(
         particles,
-        rs0 + dt * k3_drs_dt,
+        r0 + dt * k3_dr_dt,
         phi0 + dt * k3_dphi_dt,
-        ubar0 + dt * k3_dubar_dt,
+        ur0 + dt * k3_du_r_dt,
         uphi0 + dt * k3_du_phi_dt,
         weight=particles_k3.weight,
     )
@@ -266,8 +266,8 @@ def particles_rk4_step(
         particles_k4 = particle_boundary(particles_k4)
     matter_terms_k4 = compute_radial_matter_terms(particles_k4, metric_k4)
     k4_metric = metric_time_derivatives(metric_k4, matter_terms_k4)
-    k4_dubar_dt, k4_du_phi_dt, k4_drs_dt, k4_dphi_dt = (
-        compute_geodesic_terms(particles_k4, metric_k4, k4_metric)
+    k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt = (
+        compute_geodesic_terms(particles_k4, metric_k4)
     )
     # Stage 4 advances both particles and metric by a full dt using k3.
 
@@ -276,8 +276,8 @@ def particles_rk4_step(
     final_metric = _add_metric_derivative(metric, weighted_derivative, dt / 6.0)
     # finish the RK4 step by combining the weighted derivatives and updating the metric
 
-    particles.r = rs0 + (dt / 6.0) * (
-        k1_drs_dt + 2.0 * k2_drs_dt + 2.0 * k3_drs_dt + k4_drs_dt
+    particles.r = r0 + (dt / 6.0) * (
+        k1_dr_dt + 2.0 * k2_dr_dt + 2.0 * k3_dr_dt + k4_dr_dt
     )
     particles.phi = phi0 + (dt / 6.0) * (
         k1_dphi_dt
@@ -285,11 +285,11 @@ def particles_rk4_step(
         + 2.0 * k3_dphi_dt
         + k4_dphi_dt
     )
-    particles.ur = ubar0 + (dt / 6.0) * (
-        k1_dubar_dt
-        + 2.0 * k2_dubar_dt
-        + 2.0 * k3_dubar_dt
-        + k4_dubar_dt
+    particles.ur = ur0 + (dt / 6.0) * (
+        k1_du_r_dt
+        + 2.0 * k2_du_r_dt
+        + 2.0 * k3_du_r_dt
+        + k4_du_r_dt
     )
     particles.uphi = uphi0 + (dt / 6.0) * (
         k1_du_phi_dt
