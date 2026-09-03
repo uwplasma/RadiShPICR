@@ -182,12 +182,15 @@ def advance_vacuum_steps(metric: Z4C_Metric, dt, num_steps):
     return metric, first_nonfinite_step
 
 
-def _copy_particle_state(particles, r, phi, ur, uphi):
+def _copy_particle_state(particles, r, phi, ur, uphi, weight=None):
+    if weight is None:
+        weight = particles.weight
+
     return type(particles)(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
-        weight=particles.weight,
+        weight=weight,
         r=r,
         ur=ur,
         phi=phi,
@@ -196,7 +199,12 @@ def _copy_particle_state(particles, r, phi, ur, uphi):
     )
 
 
-def particles_rk4_step(particles, metric: Z4C_Metric, dt):
+def particles_rk4_step(
+    particles,
+    metric: Z4C_Metric,
+    dt,
+    particle_boundary=None,
+):
     metric = _enforce_algebraic_constraints(metric)
     # Use the same projected metric for each stage's matter and particle RHS.
 
@@ -218,6 +226,8 @@ def particles_rk4_step(particles, metric: Z4C_Metric, dt):
         ubar0 + 0.5 * dt * k1_dubar_dt,
         uphi0 + 0.5 * dt * k1_du_phi_dt,
     )
+    if particle_boundary is not None:
+        particles_k2 = particle_boundary(particles_k2)
     matter_terms_k2 = compute_radial_matter_terms(particles_k2, metric_k2)
     k2_metric = metric_time_derivatives(metric_k2, matter_terms_k2)
     k2_dubar_dt, k2_du_phi_dt, k2_drs_dt, k2_dphi_dt = (
@@ -232,7 +242,10 @@ def particles_rk4_step(particles, metric: Z4C_Metric, dt):
         phi0 + 0.5 * dt * k2_dphi_dt,
         ubar0 + 0.5 * dt * k2_dubar_dt,
         uphi0 + 0.5 * dt * k2_du_phi_dt,
+        weight=particles_k2.weight,
     )
+    if particle_boundary is not None:
+        particles_k3 = particle_boundary(particles_k3)
     matter_terms_k3 = compute_radial_matter_terms(particles_k3, metric_k3)
     k3_metric = metric_time_derivatives(metric_k3, matter_terms_k3)
     k3_dubar_dt, k3_du_phi_dt, k3_drs_dt, k3_dphi_dt = (
@@ -247,7 +260,10 @@ def particles_rk4_step(particles, metric: Z4C_Metric, dt):
         phi0 + dt * k3_dphi_dt,
         ubar0 + dt * k3_dubar_dt,
         uphi0 + dt * k3_du_phi_dt,
+        weight=particles_k3.weight,
     )
+    if particle_boundary is not None:
+        particles_k4 = particle_boundary(particles_k4)
     matter_terms_k4 = compute_radial_matter_terms(particles_k4, metric_k4)
     k4_metric = metric_time_derivatives(metric_k4, matter_terms_k4)
     k4_dubar_dt, k4_du_phi_dt, k4_drs_dt, k4_dphi_dt = (
@@ -281,5 +297,8 @@ def particles_rk4_step(particles, metric: Z4C_Metric, dt):
         + 2.0 * k3_du_phi_dt
         + k4_du_phi_dt
     )
+    particles.weight = particles_k4.weight
+    if particle_boundary is not None:
+        particles = particle_boundary(particles)
 
     return particles, final_metric

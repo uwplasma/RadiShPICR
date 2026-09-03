@@ -3,6 +3,10 @@ import jax.numpy as jnp
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.energy_momentum_tensor import MatterTerms
 from RadiShPICR.Z4C.energy_momentum_tensor import initialize_vacuum_matter_terms
+from RadiShPICR.Z4C.particle_boundaries import (
+    deleting_particle_boundary,
+    reflecting_particle_boundary,
+)
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -542,3 +546,134 @@ def test_flat_space_radial_particle_trajectory_is_exact():
     assert jnp.allclose(particles.phi, initial_phi)
     assert jnp.allclose(particles.ur, initial_ur)
     assert jnp.allclose(particles.uphi, 0.0)
+
+
+def test_reflecting_particle_boundary_reverses_center_crossing(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="reflecting",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.1]),
+        ur=jnp.asarray([-1.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="nearest",
+    )
+
+    def constant_infall(stage_particles, stage_metric, stage_metric_derivative):
+        zeros = jnp.zeros_like(stage_particles.r)
+        return zeros, zeros, -jnp.ones_like(stage_particles.r), zeros
+
+    monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
+    particles, _ = time_evolve.particles_rk4_step(
+        particles,
+        metric,
+        dt=0.2,
+        particle_boundary=reflecting_particle_boundary,
+    )
+
+    assert jnp.allclose(particles.r, 0.1)
+    assert jnp.allclose(particles.ur, 1.0)
+    assert jnp.allclose(particles.weight, 1.0)
+
+
+def test_deleting_particle_boundary_removes_center_crossing(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="deleting",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.1]),
+        ur=jnp.asarray([-1.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="nearest",
+    )
+
+    def constant_infall(stage_particles, stage_metric, stage_metric_derivative):
+        zeros = jnp.zeros_like(stage_particles.r)
+        return zeros, zeros, -jnp.ones_like(stage_particles.r), zeros
+
+    monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
+    particles, _ = time_evolve.particles_rk4_step(
+        particles,
+        metric,
+        dt=0.2,
+        particle_boundary=deleting_particle_boundary,
+    )
+
+    assert jnp.allclose(particles.r, 0.0)
+    assert jnp.allclose(particles.ur, 0.0)
+    assert jnp.allclose(particles.weight, 0.0)
+
+
+def test_deleting_particle_boundary_is_irreversible_across_rk_stages(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="deleting",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.1]),
+        ur=jnp.asarray([-1.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="nearest",
+    )
+    stage_weights = []
+
+    def record_matter_weights(stage_particles, stage_metric):
+        stage_weights.append(stage_particles.weight.copy())
+        return initialize_vacuum_matter_terms(stage_metric)
+
+    def constant_infall(stage_particles, stage_metric, stage_metric_derivative):
+        zeros = jnp.zeros_like(stage_particles.r)
+        return zeros, zeros, -jnp.ones_like(stage_particles.r), zeros
+
+    monkeypatch.setattr(time_evolve, "compute_radial_matter_terms", record_matter_weights)
+    monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
+    particles, _ = time_evolve.particles_rk4_step(
+        particles,
+        metric,
+        dt=0.4,
+        particle_boundary=deleting_particle_boundary,
+    )
+
+    assert jnp.allclose(
+        jnp.asarray(stage_weights)[:, 0],
+        jnp.asarray([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert jnp.allclose(particles.weight, 0.0)
+
+
+def test_deleting_particle_boundary_preserves_active_particles():
+    from RadiShPICR.Z4C import deleting_particle_boundary as public_boundary
+
+    particles = particle_species(
+        name="deleting",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([0.4, 0.6]),
+        r=jnp.asarray([-0.1, 0.2]),
+        ur=jnp.asarray([-1.0, 0.3]),
+        phi=jnp.asarray([0.1, 0.2]),
+        uphi=jnp.asarray([0.0, 0.4]),
+        shape_mode="nearest",
+    )
+
+    particles = public_boundary(particles)
+
+    assert jnp.allclose(particles.weight, jnp.asarray([0.0, 0.6]))
+    assert jnp.allclose(particles.r, jnp.asarray([0.0, 0.2]))
+    assert jnp.allclose(particles.ur, jnp.asarray([0.0, 0.3]))
+    assert jnp.allclose(particles.phi, jnp.asarray([0.0, 0.2]))
+    assert jnp.allclose(particles.uphi, jnp.asarray([0.0, 0.4]))
