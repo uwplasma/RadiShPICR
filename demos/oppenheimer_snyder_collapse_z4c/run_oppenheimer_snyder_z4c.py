@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -38,11 +40,8 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
     vacuum_rescale_factors,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
-from RadiShPICR.Z4C.geodesic import (
-    _radial_grid_from_metric,
-    isotropic_particle_state,
-    lapse_freezing_particle_state,
-)
+from RadiShPICR.Z4C.geodesic import _radial_grid_from_metric
+from RadiShPICR.Z4C.particle_boundaries import deleting_particle_boundary
 from RadiShPICR.Z4C.time_evolve import particles_rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
@@ -53,7 +52,10 @@ from RadiShPICR.particles.particle_shapes import (
 
 calculate_metric_jit = jax.jit(calculate_metric)
 compute_radial_matter_terms_jit = jax.jit(compute_radial_matter_terms)
-particles_rk4_step_jit = jax.jit(particles_rk4_step)
+particles_rk4_step_jit = jax.jit(
+    particles_rk4_step,
+    static_argnames=("particle_boundary",),
+)
 
 
 TOTAL_STAR_MASS = 1.0
@@ -431,7 +433,7 @@ def rescale_z4c_to_schwarzschild_coordinates(
     particles,
     exterior_mass,
 ):
-    """Return lapse-freezing diagnostic copies in the Schwarzschild chart."""
+    """Return standard-particle diagnostic copies in the Schwarzschild chart."""
 
     X_r, X_t, outer_metric_mismatch = (
         schwarzschild_rescale_factors_from_z4c(metric, exterior_mass)
@@ -446,15 +448,14 @@ def rescale_z4c_to_schwarzschild_coordinates(
         dr=metric.dr * X_r,
     )
 
-    # The areal radius is invariant under the spatial rescaling. Since the new
-    # ubar includes alpha, it follows the lapse normalization by 1 / X_t.
+    # Covariant radial momentum scales inversely with the radial coordinate.
     diagnostic_particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=particles.r,
-        ur=particles.ur / X_t,
+        r=particles.r * X_r,
+        ur=particles.ur / X_r,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -520,19 +521,13 @@ def build_initial_state(
         constrained_U_state[0],
     )
     ur = A_at_particle * particles.ur
-    rs, ubar = lapse_freezing_particle_state(
-        r_particle,
-        ur,
-        metric,
-        particles.get_shape(),
-    )
     particles = particle_species(
         name=particles.name,
         charge=particles.charges,
         mass=particles.masses,
         weight=particles.weight,
-        r=rs,
-        ur=ubar,
+        r=r_particle,
+        ur=ur,
         phi=particles.phi,
         uphi=particles.uphi,
         shape_mode=particles.shape_mode,
@@ -582,6 +577,8 @@ def state_is_acceptable(metric, particles):
 def freefall_collapse_time_step(particles, metric):
     matter_terms = compute_radial_matter_terms_jit(particles, metric)
     rho_max = float(np.max(np.asarray(matter_terms.rho)))
+    if rho_max <= 0.0:
+        return math.inf
 
     return FREE_FALL_FRACTION * math.sqrt(3.0 * math.pi / (32.0 * rho_max))
 
@@ -628,23 +625,27 @@ def write_schwarzschild_snapshot(
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
     areal_radius = diagnostic_metric.r * jnp.sqrt(gT)
-    particle_r, particle_ur = isotropic_particle_state(
-        diagnostic_particles,
-        diagnostic_metric,
+    chi_p, conformal_grr_p, conformal_gt_p = (
+        _interpolate_cell_centered_fields_to_particles(
+            jnp.stack(
+                (
+                    diagnostic_metric.chi,
+                    diagnostic_metric.conformal_grr,
+                    diagnostic_metric.conformal_gt,
+                )
+            ),
+            diagnostic_particles.r,
+            _radial_grid_from_metric(diagnostic_metric),
+            shape_mode=diagnostic_particles.get_shape(),
+            field_parities=jnp.asarray((1, 1, 1)),
+        )
     )
-    alpha_at_particle = _interpolate_cell_centered_fields_to_particles(
-        diagnostic_metric.alpha[jnp.newaxis, :],
-        particle_r,
-        _radial_grid_from_metric(diagnostic_metric),
-        shape_mode=diagnostic_particles.get_shape(),
-        field_parities=jnp.asarray((1,)),
-    )[0]
-    radial_orthonormal_velocity = (
-        diagnostic_particles.ur / alpha_at_particle
+    particle_areal_radius = diagnostic_particles.r * jnp.sqrt(
+        conformal_gt_p / chi_p
     )
-    particle_areal_radius = diagnostic_particles.r
-    # The evolved particle coordinate is already the areal radius. Keeping the
-    # saved diagnostic equal to rs avoids introducing a second interpolation.
+    radial_orthonormal_momentum = diagnostic_particles.ur * jnp.sqrt(
+        chi_p / conformal_grr_p
+    )
 
     metric_path = Path(metric_directory) / f"metric_step_{step:06d}.npz"
     np.savez_compressed(
@@ -682,12 +683,10 @@ def write_schwarzschild_snapshot(
     )
     np.savez_compressed(
         phase_space_path,
-        rs=np.asarray(diagnostic_particles.r),
-        ubar=np.asarray(diagnostic_particles.ur),
-        r=np.asarray(particle_r),
-        ur=np.asarray(particle_ur),
+        r=np.asarray(diagnostic_particles.r),
+        ur=np.asarray(diagnostic_particles.ur),
         areal_radius=np.asarray(particle_areal_radius),
-        radial_orthonormal_momentum=np.asarray(radial_orthonormal_velocity),
+        radial_orthonormal_momentum=np.asarray(radial_orthonormal_momentum),
         phi=np.asarray(diagnostic_particles.phi),
         uphi=np.asarray(diagnostic_particles.uphi),
         weight=np.asarray(diagnostic_particles.weight),
@@ -696,14 +695,14 @@ def write_schwarzschild_snapshot(
         schwarzschild_time=float(schwarzschild_time),
         species_name=diagnostic_particles.name,
         saved_coordinates="schwarzschild_isotropic_diagnostic",
-        particle_state_variables="rs_ubar",
-        particle_ubar_definition="alpha*ur*sqrt(chi/conformal_grr)",
+        particle_state_variables="r_ur",
     )
 
     return float(X_r), float(X_t), float(outer_metric_mismatch)
 
 
 def run_simulation(args):
+    wall_start = time.perf_counter()
     metric_directory, phase_space_directory = prepare_output_directory(
         args.output_directory
     )
@@ -749,10 +748,8 @@ def run_simulation(args):
         constrained_outer_X_r=float(initial_X_r),
         constrained_outer_X_t=float(initial_X_t),
         target_schwarzschild_time=float(args.target_time),
-        particle_state_variables="rs_ubar",
-        # This definition distinguishes new snapshots from legacy rs_ubar runs.
-        particle_rs_definition="r/sqrt(chi*sqrt(conformal_grr))",
-        particle_ubar_definition="alpha*ur*sqrt(chi/conformal_grr)",
+        particle_state_variables="r_ur",
+        particle_boundary="deleting",
     )
 
     step = 0
@@ -799,6 +796,7 @@ def run_simulation(args):
                     trial_particles,
                     metric,
                     trial_dt,
+                    particle_boundary=deleting_particle_boundary,
                 )
 
                 if not state_is_acceptable(trial_metric, trial_particles):
@@ -877,6 +875,41 @@ def run_simulation(args):
                 outer_g_mismatch=f"{outer_metric_mismatch:.3e}",
             )
 
+    final_metric_path = metric_directory / f"metric_step_{step:06d}.npz"
+    if not final_metric_path.exists():
+        X_r, X_t, outer_metric_mismatch = write_schwarzschild_snapshot(
+            metric,
+            particles,
+            metric_directory,
+            phase_space_directory,
+            step,
+            schwarzschild_time,
+        )
+
+    diagnostic_metric, _, _, _, _ = rescale_z4c_to_schwarzschild_coordinates(
+        metric,
+        particles,
+        TOTAL_STAR_MASS,
+    )
+    completed = args.target_time - schwarzschild_time <= time_tolerance
+    run_summary = {
+        "particle_boundary": "deleting",
+        "completed": bool(completed),
+        "final_step": int(step),
+        "final_schwarzschild_time": float(schwarzschild_time),
+        "target_schwarzschild_time": float(args.target_time),
+        "minimum_lapse": float(np.min(np.asarray(diagnostic_metric.alpha))),
+        "minimum_chi": float(np.min(np.asarray(diagnostic_metric.chi))),
+        "maximum_chi": float(np.max(np.asarray(diagnostic_metric.chi))),
+        "active_particles": int(np.count_nonzero(np.asarray(particles.weight))),
+        "total_particles": int(particles.r.size),
+        "wall_runtime_seconds": float(time.perf_counter() - wall_start),
+    }
+    with (Path(args.output_directory) / "run_summary.json").open("w") as stream:
+        json.dump(run_summary, stream, indent=2)
+        stream.write("\n")
+
+    print(json.dumps(run_summary, indent=2))
     return metric, particles, step, schwarzschild_time
 
 
@@ -884,7 +917,7 @@ def parse_arguments():
     output_directory = (
         Path(__file__).resolve().parent
         / "outputs"
-        / "z4c_oppenheimer_snyder"
+        / "z4c_oppenheimer_snyder_deleting"
     )
 
     parser = argparse.ArgumentParser()
