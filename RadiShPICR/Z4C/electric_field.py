@@ -3,7 +3,10 @@ import jax.numpy as jnp
 from RadiShPICR.particles.particle_shapes import (
     _cell_centered_radial_shape_stencil,
 )
-from RadiShPICR.Z4C.energy_momentum_tensor import _proper_radial_shell_volume
+from RadiShPICR.Z4C.energy_momentum_tensor import (
+    MatterTerms,
+    _proper_radial_shell_volume,
+)
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -115,6 +118,39 @@ def compute_radial_lorentz_force(particles, metric: Z4C_Metric, E_r):
     charge_to_mass = jnp.where(active_particle, charge / safe_mass, 0.0)
 
     return lapse_at_particle * charge_to_mass * electric_field_at_particle
+
+
+def compute_electrostatic_matter_terms(
+    metric: Z4C_Metric,
+    E_r,
+    epsilon_0=1.0,
+):
+    """Return the Eulerian stress-energy of a radial electric field.
+
+    ``E_r`` is the covariant radial field.  A purely radial electrostatic
+    field has radial tension, equal tangential pressures, and no Poynting
+    momentum density.
+    """
+
+    inverse_radial_metric = metric.chi / metric.conformal_grr
+    rho = 0.5 * epsilon_0 * inverse_radial_metric * E_r**2
+    Srr = -0.5 * epsilon_0 * E_r**2
+    Stt = (
+        0.5
+        * epsilon_0
+        * metric.conformal_gt
+        / metric.conformal_grr
+        * E_r**2
+    )
+    zeros = jnp.zeros_like(E_r)
+
+    return MatterTerms(
+        rho=rho,
+        Srr=Srr,
+        Stt=Stt,
+        Sr=zeros,
+        St=zeros,
+    )
 
 
 def electric_field_energy(metric: Z4C_Metric, E_r, epsilon_0=1.0):

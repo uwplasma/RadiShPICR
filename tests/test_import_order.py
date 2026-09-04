@@ -64,6 +64,8 @@ def test_radial_electric_solver_imports_without_relativity_metric_cycle():
 
 
 def test_formulation_local_evolution_imports_are_available():
+    import RadiShPICR.Z4C as z4c
+
     from RadiShPICR.ConstraintBasedRelativity.evolve import (
         step,
         step_rk4,
@@ -71,7 +73,7 @@ def test_formulation_local_evolution_imports_are_available():
     )
     from RadiShPICR.Z4C import (
         advance_vacuum_steps,
-        particles_rk4_step,
+        compute_electrostatic_matter_terms,
         rk4_step,
     )
 
@@ -79,8 +81,10 @@ def test_formulation_local_evolution_imports_are_available():
     assert callable(step_rk4)
     assert callable(step_rk4_with_metric)
     assert callable(advance_vacuum_steps)
+    assert callable(compute_electrostatic_matter_terms)
     assert callable(rk4_step)
-    assert callable(particles_rk4_step)
+    assert not hasattr(z4c, "electrostatic_particles_rk4_step")
+    assert not hasattr(z4c, "particles_rk4_step")
 
 
 def test_top_level_evolve_keeps_constraint_based_compatibility_imports():

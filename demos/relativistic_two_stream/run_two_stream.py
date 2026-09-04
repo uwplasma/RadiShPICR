@@ -2,9 +2,10 @@
 
 The Z4C metric uses the live ordinary ``(r, u_r)`` particle convention but is
 held exactly flat in this first electrostatic validation.  Two equal electron
-beams move at ``+/- beam_velocity`` through a prescribed, infinitely massive
-ion charge density.  The plasma occupies a guarded annulus, so no artificial
-periodic seam or particle reflection enters the measured growth interval.
+beams move at ``+/- beam_velocity`` through ions initialized at rest.  All
+three populations evolve through the same electrostatic particle step.  The
+plasma occupies a guarded annulus, so no artificial periodic seam or particle
+reflection enters the measured growth interval.
 """
 
 from __future__ import annotations
@@ -45,7 +46,7 @@ from RadiShPICR.Z4C import (
     Z4C_Metric,
     compute_radial_charge_density,
     electric_field_energy,
-    electrostatic_particles_rk4_step,
+    rk4_step,
     solve_radial_electric_field,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import _proper_radial_shell_volume
@@ -54,7 +55,8 @@ from RadiShPICR.Z4C.utils import generate_r_grid
 
 OUTGOING_ELECTRONS = 0
 INCOMING_ELECTRONS = 1
-POPULATION_LABELS = ("outgoing_electrons", "incoming_electrons")
+IONS = 2
+POPULATION_LABELS = ("outgoing_electrons", "incoming_electrons", "ions")
 
 DEFAULT_OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent / "outputs" / "z4c_two_stream"
@@ -73,12 +75,13 @@ class TwoStreamParameters:
     epsilon_0: float = 1.0
     plasma_frequency: float = 1.0
     electron_charge_to_mass: float = -1.0
+    ion_to_electron_mass_ratio: float = 1836.0
     beam_velocity: float = 0.2
     wavenumber: float = math.pi
     perturbation_amplitude: float = 1.0e-3
     shape_mode: str = "quadratic"
     dt: float = 0.025
-    final_time: float = 30.0
+    final_time: float = 50.0
     save_every: int = 10
     output_directory: Path = DEFAULT_OUTPUT_DIRECTORY
 
@@ -102,6 +105,8 @@ def validate_parameters(params: TwoStreamParameters) -> None:
         raise ValueError("epsilon_0 and plasma_frequency must be positive")
     if params.electron_charge_to_mass >= 0.0:
         raise ValueError("electron_charge_to_mass must be negative")
+    if params.ion_to_electron_mass_ratio <= 0.0:
+        raise ValueError("ion_to_electron_mass_ratio must be positive")
     if not 0.0 < params.beam_velocity < 1.0:
         raise ValueError("beam_velocity must be a physical speed in (0, 1)")
     if params.wavenumber <= 0.0 or params.perturbation_amplitude < 0.0:
@@ -186,7 +191,7 @@ def quiet_start_one_beam(
     return radius, one_beam_mass
 
 
-def make_electron_particles(
+def make_plasma_particles(
     params: TwoStreamParameters,
     metric: Z4C_Metric,
     perturb: bool = True,
@@ -206,25 +211,41 @@ def make_electron_particles(
 
     gamma_b = 1.0 / math.sqrt(1.0 - params.beam_velocity**2)
     beam_momentum = gamma_b * params.beam_velocity
-    r = np.concatenate((radius, radius))
+    r = np.concatenate((radius, radius, base_radius))
     ur = np.concatenate(
         (
             np.full_like(radius, beam_momentum),
             np.full_like(radius, -beam_momentum),
+            np.zeros_like(base_radius),
         )
     )
-    weight = np.concatenate((one_beam_mass, one_beam_mass))
+    weight = np.concatenate((one_beam_mass, one_beam_mass, 2.0 * one_beam_mass))
+    charge = np.concatenate(
+        (
+            np.full_like(radius, params.electron_charge_to_mass),
+            np.full_like(radius, params.electron_charge_to_mass),
+            np.full_like(base_radius, -params.electron_charge_to_mass),
+        )
+    )
+    mass = np.concatenate(
+        (
+            np.ones_like(radius),
+            np.ones_like(radius),
+            np.full_like(base_radius, params.ion_to_electron_mass_ratio),
+        )
+    )
     population_id = np.concatenate(
         (
             np.full(radius.size, OUTGOING_ELECTRONS, dtype=np.int32),
             np.full(radius.size, INCOMING_ELECTRONS, dtype=np.int32),
+            np.full(base_radius.size, IONS, dtype=np.int32),
         )
     )
 
     particles = particle_species(
-        name="electrons",
-        charge=jnp.asarray(params.electron_charge_to_mass),
-        mass=jnp.asarray(1.0),
+        name="two_stream_plasma",
+        charge=jnp.asarray(charge),
+        mass=jnp.asarray(mass),
         weight=jnp.asarray(weight),
         r=jnp.asarray(r),
         ur=jnp.asarray(ur),
@@ -328,12 +349,33 @@ def particle_boundary_margin(
     return float(min(np.min(radius), r_max - np.max(radius)))
 
 
+def particles_in_populations(
+    particles: particle_species,
+    population_id: np.ndarray,
+    populations,
+) -> particle_species:
+    """Return the same particle layout with other populations zero-weighted."""
+
+    selected = jnp.asarray(np.isin(population_id, populations))
+    return type(particles)(
+        name=particles.name,
+        charge=particles.charges,
+        mass=particles.masses,
+        weight=jnp.where(selected, particles.weight, 0.0),
+        r=particles.r,
+        ur=particles.ur,
+        phi=particles.phi,
+        uphi=particles.uphi,
+        shape_mode=particles.shape_mode,
+    )
+
+
 def collect_diagnostic_row(
     step: int,
     time: float,
     particles: particle_species,
     metric: Z4C_Metric,
-    ion_charge_density,
+    population_id: np.ndarray,
     charge_density,
     E_r,
     params: TwoStreamParameters,
@@ -360,10 +402,20 @@ def collect_diagnostic_row(
         E_r,
         params.epsilon_0,
     )
+    electron_particles = particles_in_populations(
+        particles,
+        population_id,
+        (OUTGOING_ELECTRONS, INCOMING_ELECTRONS),
+    )
+    ion_particles = particles_in_populations(
+        particles,
+        population_id,
+        (IONS,),
+    )
     volume = np.asarray(_proper_radial_shell_volume(metric))
     total_charge = float(np.sum(np.asarray(charge_density) * volume))
-    electron_charge = float(np.sum(np.asarray(particles.get_charge())))
-    ion_charge = float(np.sum(np.asarray(ion_charge_density) * volume))
+    electron_charge = float(np.sum(np.asarray(electron_particles.get_charge())))
+    ion_charge = float(np.sum(np.asarray(ion_particles.get_charge())))
     minimum_r = float(np.min(np.asarray(particles.r)))
     maximum_r = float(np.max(np.asarray(particles.r)))
     boundary_margin = particle_boundary_margin(particles, params.r_max)
@@ -414,7 +466,8 @@ def append_diagnostic_row(path: Path, row: dict[str, object]) -> None:
 
 def write_metric_snapshot(
     metric: Z4C_Metric,
-    ion_charge_density,
+    particles: particle_species,
+    population_id: np.ndarray,
     charge_density,
     E_r,
     output_directory: Path,
@@ -422,7 +475,21 @@ def write_metric_snapshot(
     time: float,
 ) -> Path:
     path = output_directory / f"metric_step_{step:06d}.npz"
-    electron_charge_density = charge_density - ion_charge_density
+    electron_particles = particles_in_populations(
+        particles,
+        population_id,
+        (OUTGOING_ELECTRONS, INCOMING_ELECTRONS),
+    )
+    ion_particles = particles_in_populations(
+        particles,
+        population_id,
+        (IONS,),
+    )
+    electron_charge_density = compute_radial_charge_density(
+        electron_particles,
+        metric,
+    )
+    ion_charge_density = compute_radial_charge_density(ion_particles, metric)
     np.savez_compressed(
         path,
         r=np.asarray(metric.r),
@@ -484,14 +551,17 @@ def write_run_parameters(
     params: TwoStreamParameters,
     metric: Z4C_Metric,
     particles: particle_species,
-    ion_charge_density,
+    population_id: np.ndarray,
 ) -> Path:
     values = asdict(params)
     values["output_directory"] = str(params.output_directory)
     values["r_min"] = 0.0
     values["grid_spacing"] = float(metric.dr)
     values["num_steps"] = int(round(params.final_time / params.dt))
-    values["num_electrons"] = int(particles.r.size)
+    electron_mask = population_id != IONS
+    ion_mask = population_id == IONS
+    values["num_electrons"] = int(np.count_nonzero(electron_mask))
+    values["num_ions"] = int(np.count_nonzero(ion_mask))
     values["electron_mass_density"] = (
         params.epsilon_0
         * params.plasma_frequency**2
@@ -525,20 +595,17 @@ def write_run_parameters(
     }
     values["fixed_metric"] = "minkowski_z4c"
     values["particle_boundary"] = "none_guarded_annulus"
-    values["ion_background"] = "fixed_discrete_neutralizing_charge_density"
+    values["ion_background"] = "mobile_particle_ions_initialized_at_rest"
     values["nonlinear_validation_target"] = "BGK_trapped_particle_island"
     values["gauss_residual_definition"] = (
         "cell_center_to_face_reconstruction_of_finite_volume_solve"
     )
     values["particle_state_variables"] = "r_ur"
     values["total_electron_charge"] = float(
-        np.sum(np.asarray(particles.get_charge()))
+        np.sum(np.asarray(particles.get_charge())[electron_mask])
     )
     values["total_ion_charge"] = float(
-        np.sum(
-            np.asarray(ion_charge_density)
-            * np.asarray(_proper_radial_shell_volume(metric))
-        )
+        np.sum(np.asarray(particles.get_charge())[ion_mask])
     )
 
     path = Path(params.output_directory) / "run_parameters.json"
@@ -573,18 +640,11 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         )
 
     metric = make_flat_metric(params)
-    particles, population_id = make_electron_particles(params, metric, perturb=True)
-    unperturbed_particles, _ = make_electron_particles(
-        params,
-        metric,
-        perturb=False,
-    )
+    particles, population_id = make_plasma_particles(params, metric, perturb=True)
 
     compute_charge_jit = jax.jit(compute_radial_charge_density)
-    step_jit = jax.jit(electrostatic_particles_rk4_step)
-    ion_charge_density = -compute_charge_jit(unperturbed_particles, metric)
-    electron_charge_density = compute_charge_jit(particles, metric)
-    charge_density = electron_charge_density + ion_charge_density
+    step_jit = jax.jit(rk4_step)
+    charge_density = compute_charge_jit(particles, metric)
     E_r = solve_radial_electric_field(
         metric,
         charge_density,
@@ -603,7 +663,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         stage_safe_margin += params.dt
     if particle_boundary_margin(particles, params.r_max) <= stage_safe_margin:
         raise RuntimeError(
-            "the initial electrons do not leave enough room for a boundary-safe "
+            "the initial particles do not leave enough room for a boundary-safe "
             "RK4 stage"
         )
 
@@ -613,7 +673,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
     phase_space_directory.mkdir(parents=True, exist_ok=True)
     diagnostics_path = output_directory / "diagnostics.csv"
 
-    write_run_parameters(params, metric, particles, ion_charge_density)
+    write_run_parameters(params, metric, particles, population_id)
 
     initial_total_energy = None
     row, initial_total_energy = collect_diagnostic_row(
@@ -621,7 +681,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         0.0,
         particles,
         metric,
-        ion_charge_density,
+        population_id,
         charge_density,
         E_r,
         params,
@@ -630,7 +690,8 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
     append_diagnostic_row(diagnostics_path, row)
     write_metric_snapshot(
         metric,
-        ion_charge_density,
+        particles,
+        population_id,
         charge_density,
         E_r,
         metric_directory,
@@ -661,12 +722,13 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                     "the next RK4 stages would enter the guarded computational "
                     "boundary; the last written state remains valid"
                 )
-            particles, charge_density, E_r = step_jit(
+            particles, metric, charge_density, E_r = step_jit(
                 particles,
                 metric,
-                ion_charge_density,
                 params.dt,
-                params.epsilon_0,
+                EM_on=True,
+                GR_on=False,
+                epsilon_0=params.epsilon_0,
             )
             jax.block_until_ready(E_r)
             time = step * params.dt
@@ -675,7 +737,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                 time,
                 particles,
                 metric,
-                ion_charge_density,
+                population_id,
                 charge_density,
                 E_r,
                 params,
@@ -694,7 +756,8 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
             if should_save:
                 write_metric_snapshot(
                     metric,
-                    ion_charge_density,
+                    particles,
+                    population_id,
                     charge_density,
                     E_r,
                     metric_directory,
@@ -765,6 +828,11 @@ def parse_args() -> argparse.Namespace:
         default=defaults.electron_charge_to_mass,
     )
     parser.add_argument(
+        "--ion-to-electron-mass-ratio",
+        type=float,
+        default=defaults.ion_to_electron_mass_ratio,
+    )
+    parser.add_argument(
         "--beam-velocity",
         type=float,
         default=defaults.beam_velocity,
@@ -803,6 +871,7 @@ def main() -> None:
         epsilon_0=args.epsilon_0,
         plasma_frequency=args.plasma_frequency,
         electron_charge_to_mass=args.electron_charge_to_mass,
+        ion_to_electron_mass_ratio=args.ion_to_electron_mass_ratio,
         beam_velocity=args.beam_velocity,
         wavenumber=args.wavenumber,
         perturbation_amplitude=args.perturbation_amplitude,

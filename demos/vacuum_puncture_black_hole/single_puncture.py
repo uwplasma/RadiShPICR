@@ -32,6 +32,7 @@ if str(package_root) not in sys.path:
 from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps
 from RadiShPICR.Z4C.utils import generate_r_grid
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
+from RadiShPICR.particles import particle_species
 
 ################# PARAMETERS #################
 MASS = 1.0
@@ -77,6 +78,19 @@ metric = Z4C_Metric(
     dr=dr,
 )
 
+empty = jnp.asarray([], dtype=r.dtype)
+vacuum_particles = particle_species(
+    name="vacuum",
+    charge=0.0,
+    mass=0.0,
+    weight=empty,
+    r=empty,
+    ur=empty,
+    phi=empty,
+    uphi=empty,
+    shape_mode="nearest",
+)
+
 jitted_advance_vacuum_steps = jax.jit(
     advance_vacuum_steps,
     static_argnames=("num_steps",),
@@ -98,6 +112,7 @@ with tqdm(total=Nt) as progress_bar:
     while completed_steps < Nt:
         snapshot_step = completed_steps
         metric, first_nonfinite_step = jitted_advance_vacuum_steps(
+            vacuum_particles,
             metric,
             dt,
             num_steps=1,
@@ -139,6 +154,7 @@ with tqdm(total=Nt) as progress_bar:
             continue
 
         metric, first_nonfinite_step = jitted_advance_vacuum_steps(
+            vacuum_particles,
             metric,
             dt,
             num_steps=remaining_chunk_steps,

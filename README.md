@@ -19,8 +19,9 @@ Features:
 - Fully self-consistent constraint-based relativity formulation.
 - Particle shape functions for spherical symmetry (first-order and second-order).
 - Radial electrostatic field solver.
-- Fixed-Minkowski Z4C electrostatic particle evolution with stage-centered
-  charge deposition, Gauss solve, and Lorentz forcing.
+- Unified Z4C particle, electrostatic, and metric RK4 evolution with runtime
+  `EM_on` and `GR_on` switches, stage-centered sources, and electromagnetic
+  stress-energy for dynamical spacetimes.
 
 Demos:
 - [ ] Single puncture black hole in Z4C.
@@ -34,6 +35,6 @@ CHECKLIST:
 - [ ] Add more tests for the constraint-based relativity implementation.
 - [ ] Fix definition of angular position update in constraint-based relativity implementation.
 - [X] Finish implementation of single-puncture black hole in Z4C.
-- [ ] Add dynamical Einstein-Maxwell logic and electromagnetic stress-energy
-  for evolved Z4C spacetimes.  The fixed-Minkowski electrostatic PIC path is
-  implemented separately as a validation baseline.
+- [X] Add radial electrostatic stress-energy to evolved Z4C spacetimes and
+  combine fixed-metric and dynamical-metric particle evolution in one RK4
+  stepper.

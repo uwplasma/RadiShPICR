@@ -314,3 +314,46 @@ def test_electric_field_energy_uses_physical_inverse_radial_metric():
     assert energy.shape == ()
     assert jnp.allclose(energy, expected_energy)
     assert jnp.allclose(compiled_energy, energy)
+
+
+def test_electrostatic_matter_terms_have_radial_tension_and_zero_momentum():
+    from RadiShPICR.Z4C.electric_field import (
+        compute_electrostatic_matter_terms,
+    )
+
+    metric = _metric(
+        num_cells=10,
+        dr=0.2,
+        conformal_grr=1.25,
+        conformal_gt=0.9,
+        chi=0.8,
+    )
+    E_r = 0.1 + 0.05 * metric.r
+    epsilon_0 = 1.6
+
+    matter = jax.jit(compute_electrostatic_matter_terms)(
+        metric,
+        E_r,
+        epsilon_0,
+    )
+    expected_rho = (
+        0.5 * epsilon_0 * metric.chi / metric.conformal_grr * E_r**2
+    )
+    stress_trace = (
+        metric.chi / metric.conformal_grr * matter.Srr
+        + 2.0 * metric.chi / metric.conformal_gt * matter.Stt
+    )
+
+    assert jnp.allclose(matter.rho, expected_rho)
+    assert jnp.allclose(matter.Srr, -0.5 * epsilon_0 * E_r**2)
+    assert jnp.allclose(
+        matter.Stt,
+        0.5
+        * epsilon_0
+        * metric.conformal_gt
+        / metric.conformal_grr
+        * E_r**2,
+    )
+    assert jnp.allclose(stress_trace, matter.rho)
+    assert jnp.allclose(matter.Sr, 0.0)
+    assert jnp.allclose(matter.St, 0.0)

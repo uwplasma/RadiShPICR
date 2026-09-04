@@ -1,3 +1,4 @@
+import jax
 import jax.numpy as jnp
 
 from RadiShPICR.particles import particle_species
@@ -68,6 +69,21 @@ def _make_particles():
     )
 
 
+def _empty_particles():
+    empty = jnp.asarray([], dtype=jnp.float64)
+    return particle_species(
+        name="vacuum",
+        charge=0.0,
+        mass=0.0,
+        weight=empty,
+        r=empty,
+        ur=empty,
+        phi=empty,
+        uphi=empty,
+        shape_mode="nearest",
+    )
+
+
 def _assert_algebraic_constraints(metric):
     conformal_determinant = metric.conformal_grr * metric.conformal_gt**2
     curvature_trace = (
@@ -123,15 +139,21 @@ def test_rk4_step_keeps_grid_and_damping_parameters_fixed():
 
     r = jnp.linspace(0.1, 1.0, 16)
     metric = _flat_metric(r)
-    matter_terms = initialize_vacuum_matter_terms(metric)
-
-    updated = rk4_step(metric, matter_terms, dt=1.0e-3)
+    _, updated, charge_density, E_r = rk4_step(
+        _empty_particles(),
+        metric,
+        dt=1.0e-3,
+        EM_on=False,
+        GR_on=True,
+    )
 
     assert jnp.allclose(updated.kappa, metric.kappa)
     assert jnp.allclose(updated.eta, metric.eta)
     assert jnp.allclose(updated.nu, metric.nu)
     assert jnp.allclose(updated.r, metric.r)
     assert jnp.allclose(updated.dr, metric.dr)
+    assert jnp.allclose(charge_density, 0.0)
+    assert jnp.allclose(E_r, 0.0)
 
 
 def test_rk4_step_preserves_flat_vacuum_metric():
@@ -139,9 +161,13 @@ def test_rk4_step_preserves_flat_vacuum_metric():
 
     r = jnp.linspace(0.1, 1.0, 16)
     metric = _flat_metric(r)
-    matter_terms = initialize_vacuum_matter_terms(metric)
-
-    updated = rk4_step(metric, matter_terms, dt=1.0e-3)
+    _, updated, _, _ = rk4_step(
+        _empty_particles(),
+        metric,
+        dt=1.0e-3,
+        EM_on=False,
+        GR_on=True,
+    )
 
     for updated_field, metric_field in zip(updated, metric):
         assert jnp.allclose(updated_field, metric_field)
@@ -154,16 +180,22 @@ def test_compiled_vacuum_scan_matches_repeated_rk4_steps():
 
     r = jnp.linspace(0.1, 1.0, 16)
     metric = _flat_metric(r)
-    matter_terms = initialize_vacuum_matter_terms(metric)
     dt = 1.0e-3
+    particles = _empty_particles()
     expected = metric
     for _ in range(3):
-        expected = rk4_step(expected, matter_terms, dt)
+        particles, expected, _, _ = rk4_step(
+            particles,
+            expected,
+            dt,
+            EM_on=False,
+            GR_on=True,
+        )
 
     actual, first_nonfinite_step = jax.jit(
         advance_vacuum_steps,
         static_argnames=("num_steps",),
-    )(metric, dt, num_steps=3)
+    )(_empty_particles(), metric, dt, num_steps=3)
 
     for actual_field, expected_field in zip(actual, expected):
         assert jnp.allclose(actual_field, expected_field)
@@ -181,7 +213,7 @@ def test_rk4_step_projects_every_metric_stage(monkeypatch):
         Arr=0.5 * ones,
         At=-0.25 * ones,
     )
-    matter_terms = initialize_vacuum_matter_terms(metric)
+    particles = _empty_particles()
     stage_metrics = []
 
     def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
@@ -201,7 +233,14 @@ def test_rk4_step_projects_every_metric_stage(monkeypatch):
         fake_metric_time_derivatives,
     )
 
-    updated = time_evolve.rk4_step(metric, matter_terms, dt=0.1)
+    with jax.disable_jit():
+        _, updated, _, _ = time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.1,
+            EM_on=False,
+            GR_on=True,
+        )
 
     assert len(stage_metrics) == 4
     for stage_metric in stage_metrics:
@@ -214,7 +253,7 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
 
     r = jnp.linspace(0.1, 1.0, 8)
     metric = _flat_metric(r)
-    matter_terms = initialize_vacuum_matter_terms(metric)
+    particles = _empty_particles()
     stage_values = [1.0, 2.0, 3.0, 4.0]
 
     def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
@@ -246,7 +285,14 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
         fake_metric_time_derivatives,
     )
 
-    updated = time_evolve.rk4_step(metric, matter_terms, dt=0.6)
+    with jax.disable_jit():
+        _, updated, _, _ = time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.6,
+            EM_on=False,
+            GR_on=True,
+        )
 
     expected_alpha = metric.alpha + 0.6 * (1.0 + 2.0 * 2.0 + 2.0 * 3.0 + 4.0) / 6.0
     assert jnp.allclose(updated.alpha, expected_alpha)
@@ -255,7 +301,7 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
     assert stage_values == []
 
 
-def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
+def test_rk4_step_projects_every_gr_metric_stage(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     r = jnp.linspace(0.1, 1.0, 8)
@@ -315,11 +361,14 @@ def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
         fake_metric_time_derivatives,
     )
 
-    _, updated_metric = time_evolve.particles_rk4_step(
-        particles,
-        metric,
-        dt=0.1,
-    )
+    with jax.disable_jit():
+        _, updated_metric, _, _ = time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.1,
+            EM_on=False,
+            GR_on=True,
+        )
 
     assert len(stage_metrics) == 4
     for stage_metric in stage_metrics:
@@ -327,7 +376,7 @@ def test_particles_rk4_step_projects_every_metric_stage(monkeypatch):
     _assert_algebraic_constraints(updated_metric)
 
 
-def test_particles_rk4_step_keeps_unrestricted_standard_state(monkeypatch):
+def test_rk4_step_keeps_unrestricted_standard_particle_state(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     r = jnp.linspace(0.1, 1.0, 8)
@@ -367,12 +416,22 @@ def test_particles_rk4_step_keeps_unrestricted_standard_state(monkeypatch):
     ur0 = particles.ur.copy()
     uphi0 = particles.uphi.copy()
 
-    updated_particles, updated_metric = time_evolve.particles_rk4_step(particles, metric, dt)
+    updated_particles, updated_metric, _, _ = time_evolve.rk4_step(
+        particles,
+        metric,
+        dt,
+        EM_on=False,
+        GR_on=True,
+    )
 
     expected_r = r0 + dt * jnp.asarray([-4.0, 2.0])
     expected_ur = ur0 + dt
 
-    assert updated_particles is particles
+    assert updated_particles is not particles
+    assert jnp.allclose(particles.r, r0)
+    assert jnp.allclose(particles.phi, phi0)
+    assert jnp.allclose(particles.ur, ur0)
+    assert jnp.allclose(particles.uphi, uphi0)
     assert jnp.allclose(updated_particles.r, expected_r)
     assert updated_particles.r[0] < 0.0
     assert jnp.allclose(updated_particles.phi, phi0 - dt)
@@ -381,7 +440,7 @@ def test_particles_rk4_step_keeps_unrestricted_standard_state(monkeypatch):
     assert jnp.allclose(updated_metric.alpha, metric.alpha + dt)
 
 
-def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
+def test_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     r = jnp.linspace(0.1, 1.0, 8)
@@ -427,7 +486,14 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
 
     r0 = particles.r.copy()
 
-    time_evolve.particles_rk4_step(particles, metric, dt)
+    with jax.disable_jit():
+        time_evolve.rk4_step(
+            particles,
+            metric,
+            dt,
+            EM_on=False,
+            GR_on=True,
+        )
 
     assert len(matter_stage_positions) == 4
     assert jnp.allclose(matter_stage_positions[0], r0)
@@ -441,7 +507,7 @@ def test_particles_rk4_step_recomputes_matter_from_each_particle_stage(monkeypat
 
 
 def test_flat_space_radial_particle_trajectory_is_exact():
-    from RadiShPICR.Z4C.time_evolve import particles_rk4_step
+    from RadiShPICR.Z4C.time_evolve import rk4_step
 
     grid_r = jnp.arange(0.5, 20.5, 0.5)
     initial_r = 5.0
@@ -465,7 +531,13 @@ def test_flat_space_radial_particle_trajectory_is_exact():
     )
 
     for _ in range(4):
-        particles, metric = particles_rk4_step(particles, metric, dt=0.2)
+        particles, metric, _, _ = rk4_step(
+            particles,
+            metric,
+            dt=0.2,
+            EM_on=False,
+            GR_on=True,
+        )
 
     assert jnp.allclose(particles.r, exact_r)
     assert jnp.allclose(particles.phi, initial_phi)
@@ -494,10 +566,12 @@ def test_deleting_particle_boundary_removes_center_crossing(monkeypatch):
         return zeros, zeros, -jnp.ones_like(stage_particles.r), zeros
 
     monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
-    particles, _ = time_evolve.particles_rk4_step(
+    particles, _, _, _ = time_evolve.rk4_step(
         particles,
         metric,
         dt=0.2,
+        EM_on=False,
+        GR_on=True,
         particle_boundary=deleting_particle_boundary,
     )
 
@@ -533,12 +607,15 @@ def test_deleting_particle_boundary_is_irreversible_across_rk_stages(monkeypatch
 
     monkeypatch.setattr(time_evolve, "compute_radial_matter_terms", record_matter_weights)
     monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
-    particles, _ = time_evolve.particles_rk4_step(
-        particles,
-        metric,
-        dt=0.4,
-        particle_boundary=deleting_particle_boundary,
-    )
+    with jax.disable_jit():
+        particles, _, _, _ = time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.4,
+            EM_on=False,
+            GR_on=True,
+            particle_boundary=deleting_particle_boundary,
+        )
 
     assert jnp.allclose(
         jnp.asarray(stage_weights)[:, 0],

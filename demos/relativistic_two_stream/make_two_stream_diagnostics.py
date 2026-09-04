@@ -547,20 +547,15 @@ def phase_space_limits(
 def make_phase_space_movie(
     frames: list[dict[str, object]],
     movie_path: Path,
-    wavenumber: float,
     radial_minimum: float,
     radial_maximum: float,
-    phase_origin: float | None = None,
     fps: int = 24,
     dpi: int = 120,
 ) -> None:
-    """Render raw and mode-folded phase space with fixed run-wide limits."""
+    """Render raw radial phase space with fixed run-wide limits."""
 
     if not FFMpegWriter.isAvailable():
         raise RuntimeError("Matplotlib could not find ffmpeg for phase_space.mp4")
-
-    if phase_origin is None:
-        phase_origin = radial_minimum
 
     _, momentum_limits = phase_space_limits(
         frames,
@@ -568,18 +563,13 @@ def make_phase_space_movie(
         radial_maximum=radial_maximum,
     )
     population_labels = frames[0]["population_labels"]
-    figure, axes = plt.subplots(1, 2, figsize=(12.0, 5.0), constrained_layout=True)
-    raw_axis, folded_axis = axes
+    figure, raw_axis = plt.subplots(figsize=(7.2, 5.0), constrained_layout=True)
     raw_artists = []
-    folded_artists = []
 
     for population, label in enumerate(population_labels):
         color = POPULATION_COLORS[population % len(POPULATION_COLORS)]
         raw_artists.append(
             raw_axis.scatter([], [], s=5, alpha=0.55, color=color, label=label)
-        )
-        folded_artists.append(
-            folded_axis.scatter([], [], s=5, alpha=0.55, color=color, label=label)
         )
 
     raw_axis.set_xlim(radial_minimum, radial_maximum)
@@ -589,12 +579,6 @@ def make_phase_space_movie(
     raw_axis.set_title("Raw radial phase space")
     raw_axis.grid(alpha=0.2)
 
-    folded_axis.set_xlim(0.0, 2.0 * np.pi)
-    folded_axis.set_ylim(*momentum_limits)
-    folded_axis.set_xlabel(r"mode phase $[k(r-r_0)]\;\mathrm{mod}\;2\pi$")
-    folded_axis.set_ylabel(r"radial momentum $u_r$")
-    folded_axis.set_title("Phase folded at the seeded mode")
-    folded_axis.grid(alpha=0.2)
     raw_axis.legend(loc="best", markerscale=2.0)
     title = figure.suptitle("")
 
@@ -606,9 +590,7 @@ def make_phase_space_movie(
     )
     with writer.saving(figure, movie_path, dpi=dpi):
         for frame in frames:
-            for population, (raw_artist, folded_artist) in enumerate(
-                zip(raw_artists, folded_artists)
-            ):
+            for population, raw_artist in enumerate(raw_artists):
                 in_window = np.logical_and(
                     frame["r"] >= radial_minimum,
                     frame["r"] <= radial_maximum,
@@ -619,14 +601,7 @@ def make_phase_space_movie(
                 )
                 radius = frame["r"][selected]
                 radial_momentum = frame["ur"][selected]
-                mode_phase = np.mod(
-                    wavenumber * (radius - phase_origin),
-                    2.0 * np.pi,
-                )
                 raw_artist.set_offsets(np.column_stack((radius, radial_momentum)))
-                folded_artist.set_offsets(
-                    np.column_stack((mode_phase, radial_momentum))
-                )
 
             title.set_text(
                 "Relativistic two-stream phase space, "
@@ -688,23 +663,6 @@ def radial_domain(
     return radial_minimum, radial_maximum
 
 
-def seeded_phase_origin(
-    parameters: dict[str, object],
-    radial_minimum: float,
-) -> float:
-    phase_origin = _first_parameter(
-        parameters,
-        (
-            "plasma_r_min",
-            "plasma_radial_minimum",
-            "perturbation_origin",
-        ),
-    )
-    if phase_origin is None:
-        return radial_minimum
-    return float(phase_origin)
-
-
 def add_theory_comparison(
     growth_fit: dict[str, object],
     parameters: dict[str, object],
@@ -734,34 +692,6 @@ def add_theory_comparison(
         growth_fit["growth_fit_acceptance"] = bool(
             growth_fit["meets_growth_criteria"] and relative_error <= 0.30
         )
-
-
-def seeded_wavenumber(
-    parameters: dict[str, object],
-    radial_minimum: float,
-    radial_maximum: float,
-) -> float:
-    wavenumber = _first_parameter(
-        parameters,
-        ("wavenumber", "k", "perturbation_wavenumber", "radial_wavenumber"),
-    )
-    if wavenumber is None:
-        mode = _first_parameter(
-            parameters,
-            ("perturbation_mode", "mode_number", "wavenumber_mode"),
-        )
-        if mode is None:
-            raise ValueError(
-                "run_parameters.json must record wavenumber or perturbation_mode"
-            )
-        wavenumber = 2.0 * np.pi * float(mode) / (
-            radial_maximum - radial_minimum
-        )
-
-    wavenumber = float(wavenumber)
-    if not np.isfinite(wavenumber) or wavenumber <= 0.0:
-        raise ValueError("the seeded wavenumber must be finite and positive")
-    return wavenumber
 
 
 def render_two_stream_diagnostics(
@@ -852,15 +782,11 @@ def render_two_stream_diagnostics(
         max_frames=max_frames,
     )
     radial_minimum, radial_maximum = radial_domain(parameters, frames)
-    wavenumber = seeded_wavenumber(parameters, radial_minimum, radial_maximum)
-    phase_origin = seeded_phase_origin(parameters, radial_minimum)
     make_phase_space_movie(
         frames,
         movie_path,
-        wavenumber,
         radial_minimum,
         radial_maximum,
-        phase_origin=phase_origin,
         fps=fps,
         dpi=dpi,
     )

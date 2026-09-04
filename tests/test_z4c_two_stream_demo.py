@@ -82,7 +82,7 @@ def test_quiet_start_is_cold_symmetric_and_uses_spherical_volume_quantiles():
     params = reduced_parameters(module)
     metric = module.make_flat_metric(params)
     quiet_radius, beam_weight = module.quiet_start_one_beam(params, metric)
-    particles, population_id = module.make_electron_particles(
+    particles, population_id = module.make_plasma_particles(
         params,
         metric,
         perturb=False,
@@ -90,18 +90,38 @@ def test_quiet_start_is_cold_symmetric_and_uses_spherical_volume_quantiles():
 
     num_particles_per_beam = quiet_radius.size
     outgoing_r = np.asarray(particles.r[:num_particles_per_beam])
-    incoming_r = np.asarray(particles.r[num_particles_per_beam:])
+    incoming_r = np.asarray(
+        particles.r[num_particles_per_beam:2 * num_particles_per_beam]
+    )
     outgoing_ur = np.asarray(particles.ur[:num_particles_per_beam])
-    incoming_ur = np.asarray(particles.ur[num_particles_per_beam:])
+    incoming_ur = np.asarray(
+        particles.ur[num_particles_per_beam:2 * num_particles_per_beam]
+    )
+    ion_r = np.asarray(particles.r[2 * num_particles_per_beam:])
+    ion_ur = np.asarray(particles.ur[2 * num_particles_per_beam:])
     gamma_b = 1.0 / math.sqrt(1.0 - params.beam_velocity**2)
 
     assert np.array_equal(outgoing_r, quiet_radius)
     assert np.array_equal(incoming_r, quiet_radius)
     assert np.allclose(outgoing_ur, gamma_b * params.beam_velocity)
     assert np.allclose(incoming_ur, -outgoing_ur)
+    assert np.array_equal(ion_r, quiet_radius)
+    assert np.allclose(ion_ur, 0.0)
     assert np.array_equal(
         np.asarray(particles.weight[:num_particles_per_beam]),
         beam_weight,
+    )
+    assert np.array_equal(
+        np.asarray(particles.weight[2 * num_particles_per_beam:]),
+        2.0 * beam_weight,
+    )
+    assert np.allclose(
+        np.asarray(particles.masses[2 * num_particles_per_beam:]),
+        params.ion_to_electron_mass_ratio,
+    )
+    assert np.allclose(
+        np.asarray(particles.charges[2 * num_particles_per_beam:]),
+        -params.electron_charge_to_mass,
     )
     assert np.array_equal(
         population_id,
@@ -109,6 +129,7 @@ def test_quiet_start_is_cold_symmetric_and_uses_spherical_volume_quantiles():
             (
                 np.full(num_particles_per_beam, module.OUTGOING_ELECTRONS),
                 np.full(num_particles_per_beam, module.INCOMING_ELECTRONS),
+                np.full(num_particles_per_beam, module.IONS),
             )
         ),
     )
@@ -128,31 +149,47 @@ def test_initial_ions_cancel_quiet_electrons_and_seeded_k_dominates():
     module = load_two_stream_module()
     params = reduced_parameters(module)
     metric = module.make_flat_metric(params)
-    quiet_electrons, _ = module.make_electron_particles(
+    quiet_plasma, quiet_population_id = module.make_plasma_particles(
         params,
         metric,
         perturb=False,
+    )
+    quiet_charge_density = module.compute_radial_charge_density(
+        quiet_plasma,
+        metric,
+    )
+    quiet_electrons = module.particles_in_populations(
+        quiet_plasma,
+        quiet_population_id,
+        (module.OUTGOING_ELECTRONS, module.INCOMING_ELECTRONS),
+    )
+    quiet_ions = module.particles_in_populations(
+        quiet_plasma,
+        quiet_population_id,
+        (module.IONS,),
     )
     quiet_electron_density = module.compute_radial_charge_density(
         quiet_electrons,
         metric,
     )
-    ion_charge_density = -quiet_electron_density
-    perturbed_electrons, _ = module.make_electron_particles(
+    ion_charge_density = module.compute_radial_charge_density(quiet_ions, metric)
+    perturbed_plasma, _ = module.make_plasma_particles(
         params,
         metric,
         perturb=True,
     )
-    total_charge_density = (
-        module.compute_radial_charge_density(perturbed_electrons, metric)
-        + ion_charge_density
+    total_charge_density = module.compute_radial_charge_density(
+        perturbed_plasma,
+        metric,
     )
 
-    assert jnp.array_equal(ion_charge_density, -quiet_electron_density)
-    assert jnp.array_equal(
-        quiet_electron_density + ion_charge_density,
-        jnp.zeros_like(metric.r),
+    assert jnp.allclose(
+        ion_charge_density,
+        -quiet_electron_density,
+        rtol=0.0,
+        atol=1.0e-14,
     )
+    assert jnp.allclose(quiet_charge_density, 0.0, rtol=0.0, atol=1.0e-14)
 
     r = np.asarray(metric.r)
     inside = (r >= params.analysis_r_min) & (r < params.analysis_r_max)
@@ -207,6 +244,9 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
         metadata = json.load(stream)
     assert metadata["fixed_metric"] == "minkowski_z4c"
     assert metadata["particle_boundary"] == "none_guarded_annulus"
+    assert metadata["ion_background"] == "mobile_particle_ions_initialized_at_rest"
+    assert metadata["ion_to_electron_mass_ratio"] == 1836.0
+    assert metadata["num_ions"] * 2 == metadata["num_electrons"]
     assert metadata["normalization"]["speed_of_light"] == 1.0
     assert metadata["normalization"]["combined_electron_plasma_frequency"] == (
         params.plasma_frequency
@@ -225,7 +265,6 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
     )
     assert len(metric_paths) == len(phase_paths) == 3
 
-    reference_ion_density = None
     for metric_path, phase_path in zip(metric_paths, phase_paths):
         with np.load(metric_path) as metric_snapshot, np.load(
             phase_path
@@ -234,15 +273,22 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
             assert metric_snapshot["time"] == phase_snapshot["time"]
             assert np.all(metric_snapshot["alpha"] == 1.0)
             assert np.all(metric_snapshot["chi"] == 1.0)
-            if reference_ion_density is None:
-                reference_ion_density = metric_snapshot[
-                    "ion_charge_density"
-                ].copy()
-            else:
-                assert np.array_equal(
-                    metric_snapshot["ion_charge_density"],
-                    reference_ion_density,
-                )
+            assert np.allclose(
+                metric_snapshot["electron_charge_density"]
+                + metric_snapshot["ion_charge_density"],
+                metric_snapshot["charge_density"],
+            )
+            assert tuple(phase_snapshot["population_labels"]) == (
+                "outgoing_electrons",
+                "incoming_electrons",
+                "ions",
+            )
+            assert np.count_nonzero(phase_snapshot["population_id"] == module.IONS)
+            if phase_snapshot["step"] > 0:
+                ion_momentum = phase_snapshot["ur"][
+                    phase_snapshot["population_id"] == module.IONS
+                ]
+                assert np.max(np.abs(ion_momentum)) > 0.0
             assert np.min(phase_snapshot["r"]) > 0.0
             assert np.max(phase_snapshot["r"]) < params.r_max
             assert np.all(phase_snapshot["r"] > params.plasma_r_min - 0.1)

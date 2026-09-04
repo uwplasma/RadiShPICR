@@ -42,7 +42,7 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 from RadiShPICR.Z4C.geodesic import _radial_grid_from_metric
 from RadiShPICR.Z4C.particle_boundaries import deleting_particle_boundary
-from RadiShPICR.Z4C.time_evolve import particles_rk4_step
+from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
@@ -52,15 +52,15 @@ from RadiShPICR.particles.particle_shapes import (
 
 calculate_metric_jit = jax.jit(calculate_metric)
 compute_radial_matter_terms_jit = jax.jit(compute_radial_matter_terms)
-particles_rk4_step_jit = jax.jit(
-    particles_rk4_step,
+rk4_step_jit = jax.jit(
+    rk4_step,
     static_argnames=("particle_boundary",),
 )
 
 
 TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
-TARGET_SCHWARZSCHILD_TIME = 54 * TOTAL_STAR_MASS
+TARGET_SCHWARZSCHILD_TIME = 100 * TOTAL_STAR_MASS
 
 # The constrained demo uses 500 points over 20M.  Extending that spacing to
 # 100M gives 2495 Z4c cells and 2496 constrained-solve nodes.
@@ -792,10 +792,12 @@ def run_simulation(args):
             while trial_dt >= args.minimum_dt or endpoint_trial:
                 endpoint_trial = False
                 trial_particles = copy_particles(particles)
-                trial_particles, trial_metric = particles_rk4_step_jit(
+                trial_particles, trial_metric, _, _ = rk4_step_jit(
                     trial_particles,
                     metric,
                     trial_dt,
+                    EM_on=False,
+                    GR_on=True,
                     particle_boundary=deleting_particle_boundary,
                 )
 
