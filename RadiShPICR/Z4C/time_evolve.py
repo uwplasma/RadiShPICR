@@ -122,6 +122,28 @@ def _combine_rk4_derivatives(k1, k2, k3, k4):
     )
 
 
+def metric_rk4_step(metric: Z4C_Metric, matter_terms, dt):
+    """Advance the Z4C metric with fixed matter terms using classic RK4."""
+
+    metric = _enforce_algebraic_constraints(metric)
+    # Every RK right-hand side is evaluated from a constraint-projected metric.
+
+    k1 = metric_time_derivatives(metric, matter_terms)
+
+    metric_k2 = _add_metric_derivative(metric, k1, 0.5 * dt)
+    k2 = metric_time_derivatives(metric_k2, matter_terms)
+
+    metric_k3 = _add_metric_derivative(metric, k2, 0.5 * dt)
+    k3 = metric_time_derivatives(metric_k3, matter_terms)
+
+    metric_k4 = _add_metric_derivative(metric, k3, dt)
+    k4 = metric_time_derivatives(metric_k4, matter_terms)
+
+    weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
+
+    return _add_metric_derivative(metric, weighted_derivative, dt / 6.0)
+
+
 def _metric_fields_finite(metric):
     evolved_fields = jnp.stack(
         (
@@ -385,17 +407,16 @@ def rk4_step(
     return final_particles, final_metric, charge_density, E_r
 
 
-def advance_vacuum_steps(particles, metric: Z4C_Metric, dt, num_steps):
-    """Advance several vacuum Z4C steps using an empty particle species."""
+def advance_vacuum_steps(metric: Z4C_Metric, dt, num_steps):
+    """Advance several exact-vacuum Z4C steps in one compiled scan."""
 
     def advance_one_step(carry, local_step):
-        particles, metric, first_nonfinite_step = carry
-        particles, metric, _, _ = rk4_step(
-            particles,
+        metric, first_nonfinite_step = carry
+        matter_terms = initialize_vacuum_matter_terms(metric)
+        metric = metric_rk4_step(
             metric,
+            matter_terms,
             dt,
-            EM_on=False,
-            GR_on=True,
         )
         finite = _metric_fields_finite(metric)
         first_nonfinite_step = jnp.where(
@@ -404,14 +425,13 @@ def advance_vacuum_steps(particles, metric: Z4C_Metric, dt, num_steps):
             first_nonfinite_step,
         )
 
-        return (particles, metric, first_nonfinite_step), None
+        return (metric, first_nonfinite_step), None
 
     initial_state = (
-        particles,
         metric,
         jnp.asarray(-1, dtype=jnp.int32),
     )
-    (_, metric, first_nonfinite_step), _ = jax.lax.scan(
+    (metric, first_nonfinite_step), _ = jax.lax.scan(
         advance_one_step,
         initial_state,
         jnp.arange(num_steps),

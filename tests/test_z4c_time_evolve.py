@@ -134,6 +134,109 @@ def test_metric_time_derivatives_match_metric_layout():
     assert jnp.allclose(derivatives.dr, 0.0)
 
 
+def test_metric_rk4_step_keeps_grid_and_damping_parameters_fixed():
+    from RadiShPICR.Z4C.time_evolve import metric_rk4_step
+
+    r = jnp.linspace(0.1, 1.0, 16)
+    metric = _flat_metric(r)
+    matter_terms = initialize_vacuum_matter_terms(metric)
+
+    updated = metric_rk4_step(metric, matter_terms, dt=1.0e-3)
+
+    assert jnp.allclose(updated.kappa, metric.kappa)
+    assert jnp.allclose(updated.eta, metric.eta)
+    assert jnp.allclose(updated.nu, metric.nu)
+    assert jnp.allclose(updated.r, metric.r)
+    assert jnp.allclose(updated.dr, metric.dr)
+
+
+def test_metric_rk4_step_preserves_flat_vacuum_metric():
+    from RadiShPICR.Z4C.time_evolve import metric_rk4_step
+
+    r = jnp.linspace(0.1, 1.0, 16)
+    metric = _flat_metric(r)
+    matter_terms = initialize_vacuum_matter_terms(metric)
+
+    updated = metric_rk4_step(metric, matter_terms, dt=1.0e-3)
+
+    for updated_field, metric_field in zip(updated, metric):
+        assert jnp.allclose(updated_field, metric_field)
+
+
+def test_metric_rk4_step_uses_fixed_matter_and_classic_stage_weights(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    r = jnp.linspace(0.1, 1.0, 8)
+    metric = _flat_metric(r)
+    matter_terms = MatterTerms(
+        rho=jnp.linspace(0.1, 0.8, 8),
+        Srr=jnp.linspace(0.2, 0.9, 8),
+        Stt=jnp.linspace(0.3, 1.0, 8),
+        Sr=jnp.linspace(0.4, 1.1, 8),
+        St=jnp.zeros_like(r),
+    )
+    stage_values = [1.0, 2.0, 3.0, 4.0]
+    stage_matter_terms = []
+
+    def fake_metric_time_derivatives(stage_metric, stage_matter):
+        stage_matter_terms.append(stage_matter)
+        stage_value = stage_values.pop(0)
+        return _metric_derivative(stage_metric, alpha_value=stage_value)
+
+    monkeypatch.setattr(
+        time_evolve,
+        "metric_time_derivatives",
+        fake_metric_time_derivatives,
+    )
+
+    updated = time_evolve.metric_rk4_step(metric, matter_terms, dt=0.6)
+
+    expected_alpha = metric.alpha + 0.6 * (
+        1.0 + 2.0 * 2.0 + 2.0 * 3.0 + 4.0
+    ) / 6.0
+    assert jnp.allclose(updated.alpha, expected_alpha)
+    assert all(stage_matter is matter_terms for stage_matter in stage_matter_terms)
+    assert stage_values == []
+
+
+def test_metric_rk4_step_projects_every_metric_stage(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    r = jnp.linspace(0.1, 1.0, 8)
+    ones = jnp.ones_like(r)
+    metric = _flat_metric(r)._replace(
+        conformal_grr=2.0 * ones,
+        conformal_gt=3.0 * ones,
+        Arr=0.5 * ones,
+        At=-0.25 * ones,
+    )
+    matter_terms = initialize_vacuum_matter_terms(metric)
+    stage_metrics = []
+
+    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+        stage_metrics.append(stage_metric)
+        derivative = _metric_derivative(stage_metric, alpha_value=0.0)
+        return derivative._replace(
+            conformal_grr=0.5 * ones,
+            conformal_gt=0.25 * ones,
+            Arr=0.4 * ones,
+            At=-0.3 * ones,
+        )
+
+    monkeypatch.setattr(
+        time_evolve,
+        "metric_time_derivatives",
+        fake_metric_time_derivatives,
+    )
+
+    updated = time_evolve.metric_rk4_step(metric, matter_terms, dt=0.1)
+
+    assert len(stage_metrics) == 4
+    for stage_metric in stage_metrics:
+        _assert_algebraic_constraints(stage_metric)
+    _assert_algebraic_constraints(updated)
+
+
 def test_rk4_step_keeps_grid_and_damping_parameters_fixed():
     from RadiShPICR.Z4C.time_evolve import rk4_step
 
@@ -176,29 +279,66 @@ def test_rk4_step_preserves_flat_vacuum_metric():
 def test_compiled_vacuum_scan_matches_repeated_rk4_steps():
     import jax
 
-    from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps, rk4_step
+    from RadiShPICR.Z4C.time_evolve import (
+        advance_vacuum_steps,
+        metric_rk4_step,
+    )
 
     r = jnp.linspace(0.1, 1.0, 16)
     metric = _flat_metric(r)
     dt = 1.0e-3
-    particles = _empty_particles()
     expected = metric
     for _ in range(3):
-        particles, expected, _, _ = rk4_step(
-            particles,
+        expected = metric_rk4_step(
             expected,
+            initialize_vacuum_matter_terms(expected),
             dt,
-            EM_on=False,
-            GR_on=True,
         )
 
     actual, first_nonfinite_step = jax.jit(
         advance_vacuum_steps,
         static_argnames=("num_steps",),
-    )(_empty_particles(), metric, dt, num_steps=3)
+    )(metric, dt, num_steps=3)
 
     for actual_field, expected_field in zip(actual, expected):
         assert jnp.allclose(actual_field, expected_field)
+    assert first_nonfinite_step == -1
+
+
+def test_compiled_vacuum_scan_crosses_puncture_regression_step():
+    from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps
+    from RadiShPICR.Z4C.utils import generate_r_grid
+
+    r = generate_r_grid(0.0, 100.0, 8000)
+    dr = r[1] - r[0]
+    zeros = jnp.zeros_like(r)
+    ones = jnp.ones_like(r)
+    psi = 1.0 + 1.0 / (2.0 * r)
+    metric = Z4C_Metric(
+        alpha=psi**(-2),
+        beta=zeros,
+        conformal_grr=ones,
+        conformal_gt=ones,
+        chi=psi**(-4),
+        Kh=zeros,
+        Arr=zeros,
+        At=zeros,
+        theta=zeros,
+        Gamma=zeros,
+        kappa=jnp.asarray(0.02, dtype=r.dtype),
+        eta=jnp.asarray(2.0, dtype=r.dtype),
+        nu=jnp.asarray(0.02, dtype=r.dtype),
+        r=r,
+        dr=dr,
+    )
+
+    metric, first_nonfinite_step = jax.jit(
+        advance_vacuum_steps,
+        static_argnames=("num_steps",),
+    )(metric, 0.2 * dr, num_steps=143)
+
+    for field_name in Z4C_Metric._fields[:10]:
+        assert jnp.all(jnp.isfinite(getattr(metric, field_name)))
     assert first_nonfinite_step == -1
 
 

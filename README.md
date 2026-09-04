@@ -22,12 +22,17 @@ Features:
 - Unified Z4C particle, electrostatic, and metric RK4 evolution with runtime
   `EM_on` and `GR_on` switches, stage-centered sources, and electromagnetic
   stress-energy for dynamical spacetimes.
+- Explicit metric-only Z4C RK4 evolution for vacuum and prescribed-source
+  calculations without particle deposition.
 
 Demos:
 - [ ] Single puncture black hole in Z4C.
 - [ ] Oppenheimer-Snyder collapse in constraint-based relativity.
 - [ ] Charged stellar collapse in constraint-based relativity.
-- [X] Relativistic two-stream instability on a fixed Minkowski Z4C slice.
+- [X] Relativistic two-stream instability from flat Z4C initial data, with
+  fixed-Minkowski and dynamical-GR modes, source-aware Misner--Sharp and
+  Kretschmann diagnostics, synchronized metric movies, and signed energy
+  composition plots.
 
 STILL UNDER DEVELOPMENT.  The code is not yet ready for production use.
 

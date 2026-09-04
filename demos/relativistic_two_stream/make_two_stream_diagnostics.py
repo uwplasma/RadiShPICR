@@ -1,9 +1,11 @@
-"""Plot two-stream electric growth and phase space for BGK inspection.
+"""Render two-stream field growth, energy composition, and spacetime state.
 
 The energy figure always includes the total-domain electric energy.  For the
 guarded spherical annulus, the default exponential fit uses the central
 analysis-window energy so that charge-separation transients at the finite
-plasma edges are not mistaken for the local two-stream mode.
+plasma edges are not mistaken for the local two-stream mode.  Metric and
+particle movies use the same numerically ordered snapshots and fixed run-wide
+axes.
 """
 
 from __future__ import annotations
@@ -26,6 +28,8 @@ DEFAULT_OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent / "outputs" / "z4c_two_stream"
 )
 PHASE_SPACE_PATTERN = re.compile(r"phase_space_step_(\d+)\.npz$")
+METRIC_PATTERN = re.compile(r"metric_step_(\d+)\.npz$")
+DIAGNOSTIC_SCHEMA_VERSION = 2
 POPULATION_COLORS = (
     "#4c78a8",
     "#f58518",
@@ -33,6 +37,43 @@ POPULATION_COLORS = (
     "#e45756",
     "#b279a2",
     "#72b7b2",
+)
+
+METRIC_GEOMETRY_FIELDS = (
+    ("alpha", r"$\alpha - 1$", 1.0),
+    ("beta", r"$\beta^r$", 0.0),
+    ("chi", r"$\chi - 1$", 1.0),
+    ("conformal_grr", r"$\widetilde{\gamma}_{rr} - 1$", 1.0),
+    ("conformal_gt", r"$\widetilde{\gamma}_{T} - 1$", 1.0),
+)
+EXTRINSIC_Z4C_FIELDS = (
+    ("Kh", r"$\widehat{K}$", 0.0),
+    ("Arr", r"$\widetilde{A}_{rr}$", 0.0),
+    ("At", r"$\widetilde{A}_{T}$", 0.0),
+    ("theta", r"$\Theta$", 0.0),
+    ("Gamma", r"$\widetilde{\Gamma}^{r}$", 0.0),
+)
+METRIC_ARRAY_FIELDS = (
+    "r",
+    "alpha",
+    "beta",
+    "conformal_grr",
+    "conformal_gt",
+    "chi",
+    "Kh",
+    "Arr",
+    "At",
+    "theta",
+    "Gamma",
+    "E_r",
+    "kretschmann_scalar",
+    "areal_radius",
+    "misner_sharp_mass",
+    "matter_rho",
+    "matter_Srr",
+    "matter_Stt",
+    "matter_Sr",
+    "matter_St",
 )
 
 
@@ -43,13 +84,21 @@ def phase_space_step(snapshot_path: Path) -> int:
     return int(match.group(1))
 
 
-def discover_phase_space_paths(
-    phase_space_directory: Path,
-    frame_stride: int = 1,
-    max_frames: int | None = None,
-) -> list[Path]:
-    """Select numerically ordered snapshots while always retaining the final one."""
+def metric_step(snapshot_path: Path) -> int:
+    match = METRIC_PATTERN.fullmatch(snapshot_path.name)
+    if match is None:
+        raise ValueError(f"Not a metric snapshot: {snapshot_path}")
+    return int(match.group(1))
 
+
+def _discover_snapshot_paths(
+    snapshot_directory: Path,
+    pattern: re.Pattern,
+    step_from_path,
+    snapshot_label: str,
+    frame_stride: int,
+    max_frames: int | None,
+) -> list[Path]:
     if frame_stride < 1:
         raise ValueError("frame_stride must be positive")
     if max_frames is not None and max_frames < 1:
@@ -57,13 +106,13 @@ def discover_phase_space_paths(
 
     snapshots = [
         path
-        for path in phase_space_directory.glob("phase_space_step_*.npz")
-        if PHASE_SPACE_PATTERN.fullmatch(path.name)
+        for path in snapshot_directory.iterdir()
+        if pattern.fullmatch(path.name)
     ]
-    snapshots.sort(key=phase_space_step)
+    snapshots.sort(key=step_from_path)
     if not snapshots:
         raise RuntimeError(
-            f"No phase-space snapshots found in {phase_space_directory}"
+            f"No {snapshot_label} snapshots found in {snapshot_directory}"
         )
 
     selected = snapshots[::frame_stride]
@@ -80,6 +129,40 @@ def discover_phase_space_paths(
                 selected[-1] = snapshots[-1]
 
     return selected
+
+
+def discover_phase_space_paths(
+    phase_space_directory: Path,
+    frame_stride: int = 1,
+    max_frames: int | None = None,
+) -> list[Path]:
+    """Select numerically ordered snapshots while always retaining the final one."""
+
+    return _discover_snapshot_paths(
+        phase_space_directory,
+        PHASE_SPACE_PATTERN,
+        phase_space_step,
+        "phase-space",
+        frame_stride,
+        max_frames,
+    )
+
+
+def discover_metric_paths(
+    metric_directory: Path,
+    frame_stride: int = 1,
+    max_frames: int | None = None,
+) -> list[Path]:
+    """Select numerically ordered metric snapshots including the final one."""
+
+    return _discover_snapshot_paths(
+        metric_directory,
+        METRIC_PATTERN,
+        metric_step,
+        "metric",
+        frame_stride,
+        max_frames,
+    )
 
 
 def load_phase_space_frame(snapshot_path: Path) -> dict[str, object]:
@@ -160,6 +243,91 @@ def load_phase_space_frames(
             raise ValueError("particle population ordering changes between snapshots")
 
     return frames
+
+
+def load_metric_frame(snapshot_path: Path) -> dict[str, object]:
+    """Read one source-aware Z4C metric snapshot."""
+
+    required_fields = set(METRIC_ARRAY_FIELDS) | {
+        "step",
+        "time",
+        "diagnostic_schema_version",
+    }
+    with np.load(snapshot_path, allow_pickle=False) as snapshot:
+        missing_fields = required_fields.difference(snapshot.files)
+        if missing_fields:
+            missing = ", ".join(sorted(missing_fields))
+            raise RuntimeError(
+                f"{snapshot_path} uses the old diagnostic schema and is missing "
+                f"{missing}; rerun the two-stream simulation"
+            )
+
+        schema_version = int(
+            np.asarray(snapshot["diagnostic_schema_version"]).item()
+        )
+        if schema_version != DIAGNOSTIC_SCHEMA_VERSION:
+            raise RuntimeError(
+                f"{snapshot_path} has diagnostic schema {schema_version}; "
+                "rerun the two-stream simulation"
+            )
+
+        frame = {
+            field: np.asarray(snapshot[field], dtype=float)
+            for field in METRIC_ARRAY_FIELDS
+        }
+        frame["step"] = int(np.asarray(snapshot["step"]).item())
+        frame["time"] = float(np.asarray(snapshot["time"]).item())
+
+    radius = frame["r"]
+    if radius.ndim != 1 or radius.size < 2 or not np.all(np.isfinite(radius)):
+        raise ValueError(f"{snapshot_path} must contain a one-dimensional radial grid")
+    for field in METRIC_ARRAY_FIELDS[1:]:
+        values = frame[field]
+        if values.shape != radius.shape:
+            raise ValueError(f"{snapshot_path} field {field} does not match r")
+        if not np.all(np.isfinite(values)):
+            raise ValueError(f"{snapshot_path} field {field} is non-finite")
+    if frame["step"] != metric_step(snapshot_path):
+        raise ValueError(f"{snapshot_path} filename and stored step disagree")
+    if not np.isfinite(frame["time"]):
+        raise ValueError(f"{snapshot_path} contains a non-finite time")
+
+    return frame
+
+
+def load_metric_frames(
+    metric_directory: Path,
+    frame_stride: int = 1,
+    max_frames: int | None = None,
+) -> list[dict[str, object]]:
+    paths = discover_metric_paths(
+        metric_directory,
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+    )
+    frames = [load_metric_frame(path) for path in paths]
+
+    reference_radius = frames[0]["r"]
+    for previous, frame in zip(frames, frames[1:]):
+        if frame["step"] <= previous["step"] or frame["time"] <= previous["time"]:
+            raise ValueError("metric snapshots must increase in step and time")
+        if not np.array_equal(frame["r"], reference_radius):
+            raise ValueError("the radial metric grid changes between snapshots")
+
+    return frames
+
+
+def validate_synchronized_frames(
+    phase_space_frames: list[dict[str, object]],
+    metric_frames: list[dict[str, object]],
+) -> None:
+    phase_steps = [frame["step"] for frame in phase_space_frames]
+    metric_steps = [frame["step"] for frame in metric_frames]
+    phase_times = np.asarray([frame["time"] for frame in phase_space_frames])
+    metric_times = np.asarray([frame["time"] for frame in metric_frames])
+
+    if phase_steps != metric_steps or not np.array_equal(phase_times, metric_times):
+        raise ValueError("metric and phase-space snapshots are not synchronized")
 
 
 def load_diagnostics(
@@ -612,6 +780,223 @@ def make_phase_space_movie(
     plt.close(figure)
 
 
+def _fixed_symmetric_limit(value_chunks: list[np.ndarray]) -> float:
+    maximum = max(float(np.max(np.abs(values))) for values in value_chunks)
+    if maximum == 0.0:
+        return 1.0e-12
+    return 1.05 * maximum
+
+
+def _cell_centered_radial_limits(radius: np.ndarray) -> tuple[float, float]:
+    dr = float(radius[1] - radius[0])
+    return max(0.0, float(radius[0] - 0.5 * dr)), float(radius[-1] + 0.5 * dr)
+
+
+def make_metric_movie(
+    frames: list[dict[str, object]],
+    movie_path: Path,
+    fields: tuple[tuple[str, str, float], ...],
+    title_text: str,
+    fps: int = 24,
+    dpi: int = 120,
+) -> None:
+    """Render synchronized radial metric fields with fixed run-wide axes."""
+
+    if not FFMpegWriter.isAvailable():
+        raise RuntimeError(f"Matplotlib could not find ffmpeg for {movie_path.name}")
+
+    figure, axes = plt.subplots(
+        len(fields),
+        1,
+        figsize=(7.2, 10.0),
+        sharex=True,
+        constrained_layout=True,
+    )
+    radius = frames[0]["r"]
+    radial_limits = _cell_centered_radial_limits(radius)
+    artists = []
+    for axis, (field, label, reference_value) in zip(axes, fields):
+        value_chunks = [frame[field] - reference_value for frame in frames]
+        limit = _fixed_symmetric_limit(value_chunks)
+        artist, = axis.plot(radius, value_chunks[0], color="#4c78a8")
+        axis.set_xlim(*radial_limits)
+        axis.set_ylim(-limit, limit)
+        axis.set_ylabel(label)
+        axis.grid(alpha=0.25)
+        artists.append((artist, field, reference_value))
+
+    axes[-1].set_xlabel(r"radial coordinate $r$")
+    title = figure.suptitle("")
+    writer = FFMpegWriter(
+        fps=fps,
+        codec="libx264",
+        extra_args=["-pix_fmt", "yuv420p"],
+        metadata={"artist": "RadiShPICR"},
+    )
+    with writer.saving(figure, movie_path, dpi=dpi):
+        for frame in frames:
+            for artist, field, reference_value in artists:
+                artist.set_ydata(frame[field] - reference_value)
+            title.set_text(
+                f"{title_text}, step {frame['step']:06d}, "
+                f"t = {frame['time']:.6g}"
+            )
+            writer.grab_frame()
+
+    plt.close(figure)
+
+
+def make_electric_kretschmann_movie(
+    frames: list[dict[str, object]],
+    movie_path: Path,
+    fps: int = 24,
+    dpi: int = 120,
+) -> None:
+    """Render the signed electric field and spacetime curvature invariant."""
+
+    if not FFMpegWriter.isAvailable():
+        raise RuntimeError(f"Matplotlib could not find ffmpeg for {movie_path.name}")
+
+    radius = frames[0]["r"]
+    radial_limits = _cell_centered_radial_limits(radius)
+    electric_limit = _fixed_symmetric_limit([frame["E_r"] for frame in frames])
+    curvature_chunks = [frame["kretschmann_scalar"] for frame in frames]
+    curvature_limit = _fixed_symmetric_limit(curvature_chunks)
+    curvature_linthresh = max(curvature_limit / 1.05 * 1.0e-6, 1.0e-30)
+
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(7.2, 6.8),
+        sharex=True,
+        constrained_layout=True,
+    )
+    electric_artist, = axes[0].plot(radius, frames[0]["E_r"], color="#e45756")
+    curvature_artist, = axes[1].plot(
+        radius,
+        frames[0]["kretschmann_scalar"],
+        color="#4c78a8",
+    )
+    axes[0].set_ylim(-electric_limit, electric_limit)
+    axes[0].set_ylabel(r"signed $E_r$")
+    axes[1].set_yscale("symlog", linthresh=curvature_linthresh)
+    axes[1].set_ylim(-curvature_limit, curvature_limit)
+    axes[1].set_ylabel(r"K = $R_{\mu\nu\rho\sigma}R^{\mu\nu\rho\sigma}$")
+    axes[1].set_xlabel(r"radial coordinate $r$")
+    for axis in axes:
+        axis.set_xlim(*radial_limits)
+        axis.grid(alpha=0.25)
+
+    title = figure.suptitle("")
+    writer = FFMpegWriter(
+        fps=fps,
+        codec="libx264",
+        extra_args=["-pix_fmt", "yuv420p"],
+        metadata={"artist": "RadiShPICR"},
+    )
+    with writer.saving(figure, movie_path, dpi=dpi):
+        for frame in frames:
+            electric_artist.set_ydata(frame["E_r"])
+            curvature_artist.set_ydata(frame["kretschmann_scalar"])
+            title.set_text(
+                "Electric field and Kretschmann scalar, "
+                f"step {frame['step']:06d}, t = {frame['time']:.6g}"
+            )
+            writer.grab_frame()
+
+    plt.close(figure)
+
+
+def make_energy_composition_plot(
+    time: np.ndarray,
+    gravitational_energy: np.ndarray,
+    electric_energy: np.ndarray,
+    kinetic_energy: np.ndarray,
+    mass_above_rest: np.ndarray,
+    plot_path: Path,
+    dpi: int = 180,
+) -> None:
+    """Plot the signed Misner--Sharp energy decomposition and fractions."""
+
+    normalization = (
+        np.abs(gravitational_energy) + electric_energy + kinetic_energy
+    )
+    gravitational_fraction = np.divide(
+        gravitational_energy,
+        normalization,
+        out=np.zeros_like(gravitational_energy),
+        where=normalization > 0.0,
+    )
+    electric_fraction = np.divide(
+        electric_energy,
+        normalization,
+        out=np.zeros_like(electric_energy),
+        where=normalization > 0.0,
+    )
+    kinetic_fraction = np.divide(
+        kinetic_energy,
+        normalization,
+        out=np.zeros_like(kinetic_energy),
+        where=normalization > 0.0,
+    )
+
+    energy_chunks = [
+        gravitational_energy,
+        electric_energy,
+        kinetic_energy,
+        mass_above_rest,
+    ]
+    energy_limit = _fixed_symmetric_limit(energy_chunks)
+    energy_linthresh = max(energy_limit / 1.05 * 1.0e-6, 1.0e-30)
+
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(7.4, 7.2),
+        sharex=True,
+        constrained_layout=True,
+    )
+    axes[0].plot(
+        time,
+        gravitational_energy,
+        label=r"$E_{\rm GR}$ (binding remainder)",
+    )
+    axes[0].plot(time, electric_energy, label=r"$E_{\rm electric}$")
+    axes[0].plot(time, kinetic_energy, label=r"$E_{\rm kinetic}$")
+    axes[0].plot(
+        time,
+        mass_above_rest,
+        "--",
+        color="black",
+        label=r"$M_{\rm MS}-M_{\rm rest}$",
+    )
+    axes[0].set_yscale("symlog", linthresh=energy_linthresh)
+    axes[0].set_ylim(-energy_limit, energy_limit)
+    axes[0].set_ylabel("energy")
+    axes[0].set_title("Misner--Sharp energy composition")
+    axes[0].legend(loc="best")
+
+    axes[1].plot(time, gravitational_fraction, label=r"$E_{\rm GR}/D$")
+    axes[1].plot(time, electric_fraction, label=r"$E_{\rm electric}/D$")
+    axes[1].plot(time, kinetic_fraction, label=r"$E_{\rm kinetic}/D$")
+    axes[1].set_ylim(-1.05, 1.05)
+    axes[1].set_xlabel("time")
+    axes[1].set_ylabel("signed fraction")
+    axes[1].legend(loc="best")
+    axes[1].text(
+        0.01,
+        0.03,
+        r"$D=|E_{\rm GR}|+E_{\rm electric}+E_{\rm kinetic}$",
+        transform=axes[1].transAxes,
+        fontsize="small",
+    )
+    for axis in axes:
+        axis.grid(alpha=0.25, which="both")
+
+    figure.savefig(plot_path, dpi=dpi)
+    plt.close(figure)
+
+
 def load_run_parameters(parameter_path: Path) -> dict[str, object]:
     with parameter_path.open(encoding="utf-8") as parameter_file:
         return json.load(parameter_file)
@@ -631,24 +1016,24 @@ def radial_domain(
     radial_minimum = _first_parameter(
         parameters,
         (
-            "analysis_r_min",
-            "analysis_radial_minimum",
             "r_min",
             "radial_minimum",
             "domain_r_min",
             "radial_domain_minimum",
+            "analysis_r_min",
+            "analysis_radial_minimum",
         ),
     )
     radial_maximum = _first_parameter(
         parameters,
         (
-            "analysis_r_max",
-            "analysis_radial_maximum",
             "r_max",
             "radial_maximum",
             "domain_r_max",
             "radial_domain_maximum",
             "cloud_areal_radius",
+            "analysis_r_max",
+            "analysis_radial_maximum",
         ),
     )
     if radial_minimum is None:
@@ -709,11 +1094,33 @@ def render_two_stream_diagnostics(
 ) -> dict[str, Path]:
     output_directory = Path(output_directory)
     parameters = load_run_parameters(output_directory / "run_parameters.json")
+    schema_version = parameters.get("diagnostic_schema_version")
+    if schema_version != DIAGNOSTIC_SCHEMA_VERSION:
+        raise RuntimeError(
+            "This output directory predates the source-aware diagnostic schema; "
+            "rerun the two-stream simulation"
+        )
+
     diagnostics_path = output_directory / "diagnostics.csv"
     diagnostic_table = np.atleast_1d(
         np.genfromtxt(diagnostics_path, delimiter=",", names=True)
     )
     available_columns = diagnostic_table.dtype.names or ()
+    composition_columns = {
+        "rest_mass_energy",
+        "misner_sharp_mass",
+        "gravitational_binding_energy",
+        "electric_field_energy",
+        "relativistic_kinetic_energy",
+    }
+    missing_composition_columns = composition_columns.difference(available_columns)
+    if missing_composition_columns:
+        missing = ", ".join(sorted(missing_composition_columns))
+        raise RuntimeError(
+            f"{diagnostics_path} is missing source-aware columns {missing}; "
+            "rerun the two-stream simulation"
+        )
+
     if fit_energy_column is None:
         if "analysis_electric_field_energy" in available_columns:
             fit_energy_column = "analysis_electric_field_energy"
@@ -752,9 +1159,56 @@ def render_two_stream_diagnostics(
     growth_fit["fit_energy_column"] = fit_energy_column
     add_theory_comparison(growth_fit, parameters)
 
+    phase_space_frames = load_phase_space_frames(
+        output_directory / "phase_space",
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+    )
+    metric_frames = load_metric_frames(
+        output_directory / "metric",
+        frame_stride=frame_stride,
+        max_frames=max_frames,
+    )
+    validate_synchronized_frames(phase_space_frames, metric_frames)
+
+    rest_mass_energy = np.asarray(
+        diagnostic_table["rest_mass_energy"], dtype=float
+    )
+    misner_sharp_mass = np.asarray(
+        diagnostic_table["misner_sharp_mass"], dtype=float
+    )
+    gravitational_energy = np.asarray(
+        diagnostic_table["gravitational_binding_energy"], dtype=float
+    )
+    kinetic_energy = np.asarray(
+        diagnostic_table["relativistic_kinetic_energy"], dtype=float
+    )
+    composition_arrays = (
+        rest_mass_energy,
+        misner_sharp_mass,
+        gravitational_energy,
+        total_energy,
+        kinetic_energy,
+    )
+    if not all(np.all(np.isfinite(values)) for values in composition_arrays):
+        raise ValueError("energy-composition diagnostics must be finite")
+    mass_above_rest = misner_sharp_mass - rest_mass_energy
+    decomposed_mass = gravitational_energy + total_energy + kinetic_energy
+    if not np.allclose(
+        mass_above_rest,
+        decomposed_mass,
+        rtol=1.0e-10,
+        atol=1.0e-12,
+    ):
+        raise ValueError("energy-composition diagnostics do not close")
+
     energy_plot_path = output_directory / "electric_field_energy.png"
+    energy_composition_path = output_directory / "energy_composition.png"
     growth_fit_path = output_directory / "growth_fit.json"
     movie_path = output_directory / "phase_space.mp4"
+    metric_geometry_path = output_directory / "metric_geometry.mp4"
+    extrinsic_z4c_path = output_directory / "extrinsic_z4c.mp4"
+    electric_kretschmann_path = output_directory / "electric_kretschmann.mp4"
 
     energy_labels = {
         "electric_field_energy": r"total-domain $U_E$",
@@ -776,32 +1230,63 @@ def render_two_stream_diagnostics(
         json.dump(growth_fit, fit_file, indent=2)
         fit_file.write("\n")
 
-    frames = load_phase_space_frames(
-        output_directory / "phase_space",
-        frame_stride=frame_stride,
-        max_frames=max_frames,
+    make_energy_composition_plot(
+        time,
+        gravitational_energy,
+        total_energy,
+        kinetic_energy,
+        mass_above_rest,
+        energy_composition_path,
+        dpi=dpi,
     )
-    radial_minimum, radial_maximum = radial_domain(parameters, frames)
+
+    radial_minimum, radial_maximum = radial_domain(parameters, phase_space_frames)
     make_phase_space_movie(
-        frames,
+        phase_space_frames,
         movie_path,
         radial_minimum,
         radial_maximum,
         fps=fps,
         dpi=dpi,
     )
+    make_metric_movie(
+        metric_frames,
+        metric_geometry_path,
+        METRIC_GEOMETRY_FIELDS,
+        "Metric geometry",
+        fps=fps,
+        dpi=dpi,
+    )
+    make_metric_movie(
+        metric_frames,
+        extrinsic_z4c_path,
+        EXTRINSIC_Z4C_FIELDS,
+        "Extrinsic curvature and Z4C fields",
+        fps=fps,
+        dpi=dpi,
+    )
+    make_electric_kretschmann_movie(
+        metric_frames,
+        electric_kretschmann_path,
+        fps=fps,
+        dpi=dpi,
+    )
 
     return {
         "energy_plot": energy_plot_path,
+        "energy_composition_plot": energy_composition_path,
         "growth_fit": growth_fit_path,
         "phase_space_movie": movie_path,
+        "metric_geometry_movie": metric_geometry_path,
+        "extrinsic_z4c_movie": extrinsic_z4c_path,
+        "electric_kretschmann_movie": electric_kretschmann_path,
     }
 
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Plot electric-field growth and render the two-stream phase-space movie."
+            "Plot energy diagnostics and render synchronized two-stream movies."
         )
     )
     parser.add_argument(

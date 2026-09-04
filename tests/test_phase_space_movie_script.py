@@ -52,6 +52,40 @@ def write_snapshot(
     )
 
 
+def write_metric_snapshot(metric_directory: Path, step: int, time: float):
+    metric_directory.mkdir(parents=True, exist_ok=True)
+    radius = np.linspace(0.05, 0.95, 20)
+    phase = 2.0 * np.pi * radius + 0.2 * step
+    perturbation = 1.0e-3 * np.sin(phase)
+    zeros = np.zeros_like(radius)
+    np.savez_compressed(
+        metric_directory / f"metric_step_{step:06d}.npz",
+        r=radius,
+        alpha=1.0 + perturbation,
+        beta=0.2 * perturbation,
+        conformal_grr=1.0 - perturbation,
+        conformal_gt=1.0 + 0.5 * perturbation,
+        chi=1.0 - 0.4 * perturbation,
+        Kh=0.3 * perturbation,
+        Arr=-0.2 * perturbation,
+        At=0.1 * perturbation,
+        theta=0.05 * perturbation,
+        Gamma=-0.4 * perturbation,
+        E_r=0.5 * np.sin(phase),
+        kretschmann_scalar=1.0e-4 * np.cos(phase),
+        areal_radius=radius * (1.0 + 0.1 * perturbation),
+        misner_sharp_mass=0.01 * radius,
+        matter_rho=1.0e-3 * (1.0 + np.cos(phase)),
+        matter_Srr=-1.0e-4 * np.cos(phase),
+        matter_Stt=1.0e-4 * np.cos(phase),
+        matter_Sr=zeros,
+        matter_St=zeros,
+        step=step,
+        time=time,
+        diagnostic_schema_version=2,
+    )
+
+
 def test_snapshot_discovery_is_numeric_and_retains_final_frame(tmp_path):
     module = load_diagnostic_script_module()
     phase_space_directory = tmp_path / "phase_space"
@@ -75,6 +109,58 @@ def test_snapshot_discovery_is_numeric_and_retains_final_frame(tmp_path):
         "incoming_electrons",
     )
     assert np.allclose(frames[-1]["r"], [0.2, 0.4, 0.7, 1.0])
+
+    metric_directory = tmp_path / "metric"
+    write_metric_snapshot(metric_directory, 10, 1.0)
+    write_metric_snapshot(metric_directory, 0, 0.0)
+    write_metric_snapshot(metric_directory, 2, 0.2)
+    metric_paths = module.discover_metric_paths(metric_directory, frame_stride=2)
+    metric_frames = module.load_metric_frames(metric_directory, frame_stride=2)
+
+    assert [module.metric_step(path) for path in metric_paths] == [0, 10]
+    assert [frame["step"] for frame in metric_frames] == [0, 10]
+
+
+def test_metric_snapshot_schema_requires_source_aware_fields(tmp_path):
+    module = load_diagnostic_script_module()
+    snapshot_path = tmp_path / "metric_step_000000.npz"
+    np.savez_compressed(snapshot_path, r=np.array([0.1, 0.2]), step=0, time=0.0)
+
+    with pytest.raises(RuntimeError, match="rerun the two-stream simulation"):
+        module.load_metric_frame(snapshot_path)
+
+
+def test_metric_and_particle_snapshots_must_be_synchronized(tmp_path):
+    module = load_diagnostic_script_module()
+    phase_space_directory = tmp_path / "phase_space"
+    metric_directory = tmp_path / "metric"
+    write_snapshot(phase_space_directory, 0, 0.0)
+    write_snapshot(phase_space_directory, 1, 0.1)
+    write_metric_snapshot(metric_directory, 0, 0.0)
+    write_metric_snapshot(metric_directory, 2, 0.2)
+
+    with pytest.raises(ValueError, match="not synchronized"):
+        module.validate_synchronized_frames(
+            module.load_phase_space_frames(phase_space_directory),
+            module.load_metric_frames(metric_directory),
+        )
+
+
+def test_metric_movie_limits_are_fixed_from_the_complete_frame_set():
+    module = load_diagnostic_script_module()
+    value_chunks = [
+        np.array([-1.0, 0.5]),
+        np.array([-3.0, 2.0]),
+        np.array([0.25, 1.5]),
+    ]
+
+    limit = module._fixed_symmetric_limit(value_chunks)
+
+    assert limit == pytest.approx(3.15)
+    assert all(np.max(np.abs(values)) < limit for values in value_chunks)
+    assert module._cell_centered_radial_limits(
+        np.array([0.05, 0.15, 0.25])
+    ) == pytest.approx((0.0, 0.3))
 
 
 def test_snapshot_schema_requires_raw_radial_momentum(tmp_path):
@@ -171,19 +257,46 @@ def test_renderer_requires_mode_fraction_for_the_default_purity_gate(tmp_path):
     output_directory.mkdir()
     time = np.linspace(0.0, 6.0, 31)
     energy = np.exp(time)
+    rest_mass = np.full_like(time, 10.0)
+    kinetic_energy = np.ones_like(time)
+    gravitational_energy = -0.5 * np.ones_like(time)
+    misner_sharp_mass = rest_mass + kinetic_energy + energy + gravitational_energy
     np.savetxt(
         output_directory / "diagnostics.csv",
-        np.column_stack((time, energy, energy)),
+        np.column_stack(
+            (
+                time,
+                energy,
+                energy,
+                rest_mass,
+                kinetic_energy,
+                misner_sharp_mass,
+                gravitational_energy,
+            )
+        ),
         delimiter=",",
         header=(
-            "time,electric_field_energy,analysis_electric_field_energy"
+            "time,electric_field_energy,analysis_electric_field_energy,"
+            "rest_mass_energy,relativistic_kinetic_energy,misner_sharp_mass,"
+            "gravitational_binding_energy"
         ),
         comments="",
     )
     with (output_directory / "run_parameters.json").open("w") as stream:
-        json.dump({"wavenumber": 1.0}, stream)
+        json.dump({"wavenumber": 1.0, "diagnostic_schema_version": 2}, stream)
 
     with pytest.raises(ValueError, match="mode-purity threshold"):
+        module.render_two_stream_diagnostics(output_directory)
+
+
+def test_renderer_rejects_output_from_the_old_schema(tmp_path):
+    module = load_diagnostic_script_module()
+    output_directory = tmp_path / "old_output"
+    output_directory.mkdir()
+    with (output_directory / "run_parameters.json").open("w") as stream:
+        json.dump({"wavenumber": 1.0}, stream)
+
+    with pytest.raises(RuntimeError, match="rerun the two-stream simulation"):
         module.render_two_stream_diagnostics(output_directory)
 
 
@@ -191,7 +304,7 @@ def test_renderer_requires_mode_fraction_for_the_default_purity_gate(tmp_path):
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg and ffprobe are required for the movie smoke test",
 )
-def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
+def test_render_writes_all_plots_and_two_frame_h264_movies(tmp_path):
     module = load_diagnostic_script_module()
     output_directory = tmp_path / "two_stream_output"
     phase_space_directory = output_directory / "phase_space"
@@ -200,13 +313,33 @@ def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
     time = np.linspace(0.0, 6.0, 31)
     gamma = 0.4
     energy = 1.0e-9 * np.exp(2.0 * gamma * time)
+    total_energy = 3.0 * energy
+    kinetic_energy = np.full_like(time, 0.2)
+    rest_mass_energy = np.full_like(time, 10.0)
+    gravitational_energy = -0.1 + 0.005 * np.sin(time)
+    misner_sharp_mass = (
+        rest_mass_energy + gravitational_energy + total_energy + kinetic_energy
+    )
     np.savetxt(
         output_directory / "diagnostics.csv",
-        np.column_stack((time, 3.0 * energy, energy, np.ones_like(time))),
+        np.column_stack(
+            (
+                time,
+                total_energy,
+                energy,
+                np.ones_like(time),
+                rest_mass_energy,
+                kinetic_energy,
+                misner_sharp_mass,
+                gravitational_energy,
+            )
+        ),
         delimiter=",",
         header=(
             "time,electric_field_energy,analysis_electric_field_energy,"
-            "target_mode_energy_fraction"
+            "target_mode_energy_fraction,rest_mass_energy,"
+            "relativistic_kinetic_energy,misner_sharp_mass,"
+            "gravitational_binding_energy"
         ),
         comments="",
     )
@@ -220,6 +353,7 @@ def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
                 "plasma_r_min": 0.0,
                 "wavenumber": 4.0 * np.pi,
                 "theoretical_amplitude_growth_rate": gamma,
+                "diagnostic_schema_version": 2,
             },
             stream,
         )
@@ -232,6 +366,9 @@ def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
         radius=[0.12, 0.32, 0.58, 0.88],
         radial_momentum=[0.20, 0.24, -0.18, -0.23],
     )
+    metric_directory = output_directory / "metric"
+    write_metric_snapshot(metric_directory, 0, 0.0)
+    write_metric_snapshot(metric_directory, 1, 0.1)
 
     paths = module.render_two_stream_diagnostics(
         output_directory,
@@ -241,8 +378,16 @@ def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
     )
 
     assert paths["energy_plot"].stat().st_size > 0
+    assert paths["energy_composition_plot"].stat().st_size > 0
     assert paths["growth_fit"].stat().st_size > 0
-    assert paths["phase_space_movie"].stat().st_size > 0
+    movie_names = (
+        "phase_space_movie",
+        "metric_geometry_movie",
+        "extrinsic_z4c_movie",
+        "electric_kretschmann_movie",
+    )
+    for movie_name in movie_names:
+        assert paths[movie_name].stat().st_size > 0
     with paths["growth_fit"].open() as stream:
         growth_fit = json.load(stream)
     assert growth_fit["gamma"] == pytest.approx(gamma, rel=1.0e-12)
@@ -253,24 +398,25 @@ def test_render_writes_png_growth_fit_and_two_frame_h264_movie(tmp_path):
     assert growth_fit["growth_rate_within_30_percent"] is True
     assert growth_fit["growth_fit_acceptance"] is True
 
-    probe = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-select_streams",
-            "v:0",
-            "-show_entries",
-            "stream=codec_name,pix_fmt,nb_frames",
-            "-of",
-            "json",
-            str(paths["phase_space_movie"]),
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    stream = json.loads(probe.stdout)["streams"][0]
-    assert stream["codec_name"] == "h264"
-    assert stream["pix_fmt"] == "yuv420p"
-    assert int(stream["nb_frames"]) == 2
+    for movie_name in movie_names:
+        probe = subprocess.run(
+            [
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_entries",
+                "stream=codec_name,pix_fmt,nb_frames",
+                "-of",
+                "json",
+                str(paths[movie_name]),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        stream = json.loads(probe.stdout)["streams"][0]
+        assert stream["codec_name"] == "h264"
+        assert stream["pix_fmt"] == "yuv420p"
+        assert int(stream["nb_frames"]) == 2

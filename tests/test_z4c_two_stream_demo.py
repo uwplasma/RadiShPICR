@@ -243,6 +243,10 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
     with (output_directory / "run_parameters.json").open() as stream:
         metadata = json.load(stream)
     assert metadata["fixed_metric"] == "minkowski_z4c"
+    assert metadata["initial_metric"] == "minkowski_z4c"
+    assert metadata["metric_evolution"] == "fixed_minkowski"
+    assert metadata["dynamic_gr"] is False
+    assert metadata["diagnostic_schema_version"] == 2
     assert metadata["particle_boundary"] == "none_guarded_annulus"
     assert metadata["ion_background"] == "mobile_particle_ions_initialized_at_rest"
     assert metadata["ion_to_electron_mass_ratio"] == 1836.0
@@ -271,8 +275,23 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
         ) as phase_snapshot:
             assert metric_snapshot["step"] == phase_snapshot["step"]
             assert metric_snapshot["time"] == phase_snapshot["time"]
+            assert not metric_snapshot["dynamic_gr"]
+            assert metric_snapshot["fixed_minkowski"]
             assert np.all(metric_snapshot["alpha"] == 1.0)
             assert np.all(metric_snapshot["chi"] == 1.0)
+            assert metric_snapshot["diagnostic_schema_version"] == 2
+            for field_name in (
+                "areal_radius",
+                "misner_sharp_mass",
+                "kretschmann_scalar",
+                "matter_rho",
+                "matter_Srr",
+                "matter_Stt",
+                "matter_Sr",
+                "matter_St",
+            ):
+                assert metric_snapshot[field_name].shape == metric_snapshot["r"].shape
+                assert np.all(np.isfinite(metric_snapshot[field_name]))
             assert np.allclose(
                 metric_snapshot["electron_charge_density"]
                 + metric_snapshot["ion_charge_density"],
@@ -302,7 +321,10 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
     assert {
         "electric_field_energy",
         "analysis_electric_field_energy",
+        "rest_mass_energy",
         "relativistic_kinetic_energy",
+        "misner_sharp_mass",
+        "gravitational_binding_energy",
         "target_mode_amplitude",
         "target_mode_power",
         "total_charge",
@@ -315,6 +337,67 @@ def test_tiny_run_writes_consistent_metadata_and_stays_inside_guards(tmp_path):
     assert np.array_equal(diagnostics["step"], np.arange(3))
     assert np.allclose(diagnostics["time"], np.asarray([0.0, 0.01, 0.02]))
     assert np.all(diagnostics["finite_state"])
+    assert np.allclose(
+        diagnostics["misner_sharp_mass"] - diagnostics["rest_mass_energy"],
+        diagnostics["gravitational_binding_energy"]
+        + diagnostics["relativistic_kinetic_energy"]
+        + diagnostics["electric_field_energy"],
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
+
+
+def test_dynamic_gr_evolves_from_flat_metric(tmp_path):
+    module = load_two_stream_module()
+    output_directory = tmp_path / "dynamic_z4c_two_stream"
+    params = replace(
+        reduced_parameters(module, output_directory=output_directory),
+        dynamic_gr=True,
+        dt=1.0e-4,
+        final_time=1.0e-4,
+    )
+
+    summary = module.run_two_stream(params)
+
+    assert summary["finite_state"]
+    assert summary["dynamic_gr"] is True
+    assert summary["fixed_minkowski"] is False
+
+    with (output_directory / "run_parameters.json").open() as stream:
+        metadata = json.load(stream)
+    assert metadata["initial_metric"] == "minkowski_z4c"
+    assert metadata["metric_evolution"] == "dynamic_z4c"
+    assert metadata["fixed_metric"] is None
+    assert metadata["diagnostic_schema_version"] == 2
+
+    metric_paths = sorted((output_directory / "metric").glob("metric_step_*.npz"))
+    with np.load(metric_paths[0]) as initial_snapshot:
+        assert initial_snapshot["dynamic_gr"]
+        assert not initial_snapshot["fixed_minkowski"]
+        for field_name in ("alpha", "conformal_grr", "conformal_gt", "chi"):
+            assert np.all(initial_snapshot[field_name] == 1.0)
+        for field_name in ("beta", "Kh", "Arr", "At", "theta", "Gamma"):
+            assert np.all(initial_snapshot[field_name] == 0.0)
+        assert np.all(np.isfinite(initial_snapshot["kretschmann_scalar"]))
+    with np.load(metric_paths[-1]) as final_snapshot:
+        assert not np.all(final_snapshot["alpha"] == 1.0)
+        assert np.all(np.isfinite(final_snapshot["kretschmann_scalar"]))
+
+    diagnostics = np.atleast_1d(
+        np.genfromtxt(
+            output_directory / "diagnostics.csv",
+            delimiter=",",
+            names=True,
+        )
+    )
+    assert np.allclose(
+        diagnostics["misner_sharp_mass"] - diagnostics["rest_mass_energy"],
+        diagnostics["gravitational_binding_energy"]
+        + diagnostics["relativistic_kinetic_energy"]
+        + diagnostics["electric_field_energy"],
+        rtol=1.0e-12,
+        atol=1.0e-12,
+    )
 
 
 def test_run_aborts_before_an_rk4_stage_can_enter_the_boundary(tmp_path):

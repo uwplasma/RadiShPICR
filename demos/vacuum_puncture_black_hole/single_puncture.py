@@ -7,6 +7,7 @@
 
 
 from __future__ import annotations
+import math
 import os
 import sys
 from pathlib import Path
@@ -32,7 +33,6 @@ if str(package_root) not in sys.path:
 from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps
 from RadiShPICR.Z4C.utils import generate_r_grid
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
-from RadiShPICR.particles import particle_species
 
 ################# PARAMETERS #################
 MASS = 1.0
@@ -78,28 +78,15 @@ metric = Z4C_Metric(
     dr=dr,
 )
 
-empty = jnp.asarray([], dtype=r.dtype)
-vacuum_particles = particle_species(
-    name="vacuum",
-    charge=0.0,
-    mass=0.0,
-    weight=empty,
-    r=empty,
-    ur=empty,
-    phi=empty,
-    uphi=empty,
-    shape_mode="nearest",
-)
-
 jitted_advance_vacuum_steps = jax.jit(
     advance_vacuum_steps,
     static_argnames=("num_steps",),
 )
 # Compile several timesteps together and synchronize only at output boundaries.
-dt = CFL * float(dr)
-# compute the time step based on the CFL condition and the radial grid spacing
-Nt = int( FINAL_TIME / dt )
-# compute the number of time steps needed to reach the final time
+dt_limit = CFL * float(dr)
+Nt = max(1, math.ceil(FINAL_TIME / dt_limit))
+dt = FINAL_TIME / Nt
+# Choose a CFL-safe step that reaches the requested final time exactly.
 run_data = {
     "snapshots": [],
     "final_metric": None,
@@ -110,9 +97,8 @@ completed_steps = 0
 
 with tqdm(total=Nt) as progress_bar:
     while completed_steps < Nt:
-        snapshot_step = completed_steps
+        chunk_start_step = completed_steps
         metric, first_nonfinite_step = jitted_advance_vacuum_steps(
-            vacuum_particles,
             metric,
             dt,
             num_steps=1,
@@ -123,14 +109,17 @@ with tqdm(total=Nt) as progress_bar:
         progress_bar.update(1)
 
         if first_nonfinite_step >= 0:
+            nonfinite_step = (
+                chunk_start_step + int(first_nonfinite_step) + 1
+            )
             print(
                 "Non-finite fields encountered at "
-                f"step {snapshot_step}, time {snapshot_step*dt:.8e}"
+                f"step {nonfinite_step}, time {nonfinite_step*dt:.8e}"
             )
             break
 
         snapshot = {
-            "time": float(snapshot_step * dt),
+            "time": float(completed_steps * dt),
             "fields": {
                 "alpha": host_metric.alpha,
                 "beta": host_metric.beta,
@@ -153,8 +142,8 @@ with tqdm(total=Nt) as progress_bar:
         if remaining_chunk_steps == 0:
             continue
 
+        chunk_start_step = completed_steps
         metric, first_nonfinite_step = jitted_advance_vacuum_steps(
-            vacuum_particles,
             metric,
             dt,
             num_steps=remaining_chunk_steps,
@@ -165,7 +154,7 @@ with tqdm(total=Nt) as progress_bar:
 
         if first_nonfinite_step >= 0:
             nonfinite_step = (
-                snapshot_step + 1 + int(first_nonfinite_step)
+                chunk_start_step + int(first_nonfinite_step) + 1
             )
             print(
                 "Non-finite fields encountered at "

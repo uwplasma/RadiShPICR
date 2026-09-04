@@ -1,11 +1,12 @@
-"""Cold relativistic radial two-stream instability on fixed Minkowski Z4C data.
+"""Cold relativistic radial two-stream instability with flat Z4C initial data.
 
 The Z4C metric uses the live ordinary ``(r, u_r)`` particle convention but is
-held exactly flat in this first electrostatic validation.  Two equal electron
-beams move at ``+/- beam_velocity`` through ions initialized at rest.  All
-three populations evolve through the same electrostatic particle step.  The
-plasma occupies a guarded annulus, so no artificial periodic seam or particle
-reflection enters the measured growth interval.
+initialized as exact Minkowski space.  ``dynamic_gr`` controls whether that
+metric evolves with the particle and electric-field stress-energy or remains
+fixed.  Two equal electron beams move at ``+/- beam_velocity`` through ions
+initialized at rest.  All three populations evolve through the same coupled
+RK4 step.  The plasma occupies a guarded annulus, so no artificial periodic
+seam or particle reflection enters the measured growth interval.
 """
 
 from __future__ import annotations
@@ -42,14 +43,25 @@ jax.config.update("jax_enable_x64", True)
 import jax.numpy as jnp
 
 from RadiShPICR.particles import particle_species
+from RadiShPICR.particles.particle_shapes import (
+    _interpolate_cell_centered_fields_to_particles,
+)
 from RadiShPICR.Z4C import (
     Z4C_Metric,
+    compute_electrostatic_matter_terms,
     compute_radial_charge_density,
     electric_field_energy,
+    kretschmann_scalar,
+    misner_sharp_mass,
     rk4_step,
     solve_radial_electric_field,
 )
-from RadiShPICR.Z4C.energy_momentum_tensor import _proper_radial_shell_volume
+from RadiShPICR.Z4C.energy_momentum_tensor import (
+    MatterTerms,
+    _proper_radial_shell_volume,
+    compute_radial_matter_terms,
+)
+from RadiShPICR.Z4C.geodesic import _radial_grid_from_metric
 from RadiShPICR.Z4C.utils import generate_r_grid
 
 
@@ -61,10 +73,12 @@ POPULATION_LABELS = ("outgoing_electrons", "incoming_electrons", "ions")
 DEFAULT_OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent / "outputs" / "z4c_two_stream"
 )
+DIAGNOSTIC_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True)
 class TwoStreamParameters:
+    dynamic_gr: bool = True
     r_max: float = 80.0
     plasma_r_min: float = 20.0
     plasma_r_max: float = 60.0
@@ -273,9 +287,50 @@ def cold_two_stream_growth_rate(params: TwoStreamParameters) -> float:
     return math.sqrt(max(unstable_omega_squared, 0.0))
 
 
-def relativistic_kinetic_energy(particles: particle_species) -> jnp.ndarray:
-    lorentz_factor = jnp.sqrt(1.0 + particles.ur**2 + particles.uphi**2 / particles.r**2)
+def relativistic_kinetic_energy(
+    particles: particle_species,
+    metric: Z4C_Metric,
+) -> jnp.ndarray:
+    grr_p, gt_p = _interpolate_cell_centered_fields_to_particles(
+        jnp.stack(
+            (
+                metric.conformal_grr / metric.chi,
+                metric.conformal_gt / metric.chi,
+            )
+        ),
+        particles.r,
+        _radial_grid_from_metric(metric),
+        shape_mode=particles.get_shape(),
+        field_parities=jnp.asarray((1, 1)),
+    )
+    lorentz_factor = jnp.sqrt(
+        1.0
+        + particles.ur**2 / grr_p
+        + particles.uphi**2 / (particles.r**2 * gt_p)
+    )
     return jnp.sum(particles.get_mass() * (lorentz_factor - 1.0))
+
+
+def total_matter_terms(
+    particles: particle_species,
+    metric: Z4C_Metric,
+    E_r,
+    epsilon_0: float,
+) -> MatterTerms:
+    particle_matter = compute_radial_matter_terms(particles, metric)
+    field_matter = compute_electrostatic_matter_terms(
+        metric,
+        E_r,
+        epsilon_0=epsilon_0,
+    )
+
+    return MatterTerms(
+        rho=particle_matter.rho + field_matter.rho,
+        Srr=particle_matter.Srr + field_matter.Srr,
+        Stt=particle_matter.Stt + field_matter.Stt,
+        Sr=particle_matter.Sr + field_matter.Sr,
+        St=particle_matter.St + field_matter.St,
+    )
 
 
 def target_mode_diagnostics(
@@ -384,7 +439,15 @@ def collect_diagnostic_row(
     field_energy = float(
         electric_field_energy(metric, E_r, epsilon_0=params.epsilon_0)
     )
-    kinetic_energy = float(relativistic_kinetic_energy(particles))
+    kinetic_energy = float(relativistic_kinetic_energy(particles, metric))
+    rest_mass_energy = float(jnp.sum(particles.get_mass()))
+    outer_misner_sharp_mass = float(misner_sharp_mass(metric)[-1])
+    gravitational_binding_energy = (
+        outer_misner_sharp_mass
+        - rest_mass_energy
+        - kinetic_energy
+        - field_energy
+    )
     total_energy = field_energy + kinetic_energy
     if initial_total_energy is None:
         initial_total_energy = total_energy
@@ -424,6 +487,12 @@ def collect_diagnostic_row(
         and np.all(np.isfinite(np.asarray(particles.ur)))
         and np.all(np.isfinite(np.asarray(E_r)))
         and np.all(np.isfinite(np.asarray(charge_density)))
+        and all(
+            np.all(np.isfinite(np.asarray(getattr(metric, field_name))))
+            for field_name in Z4C_Metric._fields[:10]
+        )
+        and np.isfinite(outer_misner_sharp_mass)
+        and np.isfinite(gravitational_binding_energy)
     )
 
     row = {
@@ -435,7 +504,10 @@ def collect_diagnostic_row(
         "maximum_abs_Er": float(np.max(np.abs(np.asarray(E_r)))),
         "electric_field_energy": field_energy,
         "analysis_electric_field_energy": analysis_field_energy,
+        "rest_mass_energy": rest_mass_energy,
         "relativistic_kinetic_energy": kinetic_energy,
+        "misner_sharp_mass": outer_misner_sharp_mass,
+        "gravitational_binding_energy": gravitational_binding_energy,
         "field_plus_particle_energy": total_energy,
         "relative_total_energy_drift": (
             (total_energy - initial_total_energy) / initial_total_energy
@@ -473,6 +545,8 @@ def write_metric_snapshot(
     output_directory: Path,
     step: int,
     time: float,
+    dynamic_gr: bool,
+    epsilon_0: float,
 ) -> Path:
     path = output_directory / f"metric_step_{step:06d}.npz"
     electron_particles = particles_in_populations(
@@ -490,6 +564,15 @@ def write_metric_snapshot(
         metric,
     )
     ion_charge_density = compute_radial_charge_density(ion_particles, metric)
+    matter_terms = total_matter_terms(
+        particles,
+        metric,
+        E_r,
+        epsilon_0,
+    )
+    areal_radius = metric.r * jnp.sqrt(metric.conformal_gt / metric.chi)
+    mass_profile = misner_sharp_mass(metric)
+    kretschmann = kretschmann_scalar(metric, matter_terms)
     np.savez_compressed(
         path,
         r=np.asarray(metric.r),
@@ -503,13 +586,24 @@ def write_metric_snapshot(
         At=np.asarray(metric.At),
         theta=np.asarray(metric.theta),
         Gamma=np.asarray(metric.Gamma),
+        areal_radius=np.asarray(areal_radius),
         E_r=np.asarray(E_r),
+        misner_sharp_mass=np.asarray(mass_profile),
+        kretschmann_scalar=np.asarray(kretschmann),
         charge_density=np.asarray(charge_density),
         electron_charge_density=np.asarray(electron_charge_density),
         ion_charge_density=np.asarray(ion_charge_density),
+        matter_rho=np.asarray(matter_terms.rho),
+        matter_Srr=np.asarray(matter_terms.Srr),
+        matter_Stt=np.asarray(matter_terms.Stt),
+        matter_Sr=np.asarray(matter_terms.Sr),
+        matter_St=np.asarray(matter_terms.St),
         step=int(step),
         time=float(time),
-        fixed_minkowski=True,
+        diagnostic_schema_version=DIAGNOSTIC_SCHEMA_VERSION,
+        initial_metric="minkowski_z4c",
+        dynamic_gr=dynamic_gr,
+        fixed_minkowski=not dynamic_gr,
         particle_state_variables="r_ur",
     )
     return path
@@ -517,19 +611,33 @@ def write_metric_snapshot(
 
 def write_phase_space_snapshot(
     particles: particle_species,
+    metric: Z4C_Metric,
     population_id: np.ndarray,
     output_directory: Path,
     step: int,
     time: float,
+    dynamic_gr: bool,
 ) -> Path:
+    chi_p, conformal_grr_p = _interpolate_cell_centered_fields_to_particles(
+        jnp.stack((metric.chi, metric.conformal_grr)),
+        particles.r,
+        _radial_grid_from_metric(metric),
+        shape_mode=particles.get_shape(),
+        field_parities=jnp.asarray((1, 1)),
+    )
     radial_momentum = np.asarray(particles.ur)
-    local_radial_velocity = radial_momentum / np.sqrt(1.0 + radial_momentum**2)
+    radial_orthonormal_momentum = np.asarray(
+        particles.ur * jnp.sqrt(chi_p / conformal_grr_p)
+    )
+    local_radial_velocity = radial_orthonormal_momentum / np.sqrt(
+        1.0 + radial_orthonormal_momentum**2
+    )
     path = output_directory / f"phase_space_step_{step:06d}.npz"
     np.savez_compressed(
         path,
         r=np.asarray(particles.r),
         ur=radial_momentum,
-        radial_orthonormal_momentum=radial_momentum,
+        radial_orthonormal_momentum=radial_orthonormal_momentum,
         local_radial_velocity=local_radial_velocity,
         weight=np.asarray(particles.weight),
         charge_to_mass=np.broadcast_to(
@@ -541,7 +649,8 @@ def write_phase_space_snapshot(
         step=int(step),
         time=float(time),
         species_name=particles.name,
-        saved_coordinates="z4c_minkowski_radial",
+        saved_coordinates="z4c_radial",
+        dynamic_gr=dynamic_gr,
         particle_state_variables="r_ur",
     )
     return path
@@ -554,6 +663,7 @@ def write_run_parameters(
     population_id: np.ndarray,
 ) -> Path:
     values = asdict(params)
+    values["diagnostic_schema_version"] = DIAGNOSTIC_SCHEMA_VERSION
     values["output_directory"] = str(params.output_directory)
     values["r_min"] = 0.0
     values["grid_spacing"] = float(metric.dr)
@@ -593,7 +703,11 @@ def write_run_parameters(
         "analysis_window": [params.analysis_r_min, params.analysis_r_max],
         "local_theory_benchmark": "homogeneous_slab_approximation",
     }
-    values["fixed_metric"] = "minkowski_z4c"
+    values["initial_metric"] = "minkowski_z4c"
+    values["metric_evolution"] = (
+        "dynamic_z4c" if params.dynamic_gr else "fixed_minkowski"
+    )
+    values["fixed_metric"] = None if params.dynamic_gr else "minkowski_z4c"
     values["particle_boundary"] = "none_guarded_annulus"
     values["ion_background"] = "mobile_particle_ions_initialized_at_rest"
     values["nonlinear_validation_target"] = "BGK_trapped_particle_island"
@@ -653,7 +767,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
     jax.block_until_ready(E_r)
 
     if not metric_is_exactly_minkowski(metric):
-        raise RuntimeError("the fixed Z4C initial data are not exactly Minkowski")
+        raise RuntimeError("the Z4C initial data are not exactly Minkowski")
 
     num_steps = int(round(params.final_time / params.dt))
     stage_safe_margin = 2.0 * float(metric.dr)
@@ -697,20 +811,28 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         metric_directory,
         0,
         0.0,
+        params.dynamic_gr,
+        params.epsilon_0,
     )
     write_phase_space_snapshot(
         particles,
+        metric,
         population_id,
         phase_space_directory,
         0,
         0.0,
+        params.dynamic_gr,
     )
 
     time = 0.0
     with tqdm(
         total=params.final_time,
         initial=time,
-        desc="evolving fixed-Minkowski Z4C two-stream",
+        desc=(
+            "evolving dynamical Z4C two-stream"
+            if params.dynamic_gr
+            else "evolving fixed-Minkowski Z4C two-stream"
+        ),
         unit="t",
     ) as progress_bar:
         for step in range(1, num_steps + 1):
@@ -727,7 +849,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                 metric,
                 params.dt,
                 EM_on=True,
-                GR_on=False,
+                GR_on=params.dynamic_gr,
                 epsilon_0=params.epsilon_0,
             )
             jax.block_until_ready(E_r)
@@ -763,13 +885,17 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                     metric_directory,
                     step,
                     time,
+                    params.dynamic_gr,
+                    params.epsilon_0,
                 )
                 write_phase_space_snapshot(
                     particles,
+                    metric,
                     population_id,
                     phase_space_directory,
                     step,
                     time,
+                    params.dynamic_gr,
                 )
 
             progress_bar.update(time - previous_time)
@@ -788,7 +914,12 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         "steps": num_steps,
         "time": time,
         "finite_state": bool(row["finite_state"]),
+        "dynamic_gr": params.dynamic_gr,
         "fixed_minkowski": metric_is_exactly_minkowski(metric),
+        "final_misner_sharp_mass": float(row["misner_sharp_mass"]),
+        "final_gravitational_binding_energy": float(
+            row["gravitational_binding_energy"]
+        ),
         "theoretical_amplitude_growth_rate": cold_two_stream_growth_rate(params),
         "final_electric_field_energy": float(row["electric_field_energy"]),
         "final_mode_fraction": float(row["target_mode_energy_fraction"]),
@@ -799,8 +930,14 @@ def parse_args() -> argparse.Namespace:
     defaults = TwoStreamParameters()
     parser = argparse.ArgumentParser(
         description=(
-            "Run a cold radial two-stream instability on fixed Minkowski Z4C data."
+            "Run a cold radial two-stream instability from flat Z4C initial data."
         )
+    )
+    parser.add_argument(
+        "--dynamic-gr",
+        action=argparse.BooleanOptionalAction,
+        default=defaults.dynamic_gr,
+        help="evolve Z4C from the initially flat metric (default: keep it fixed)",
     )
     parser.add_argument("--output-dir", type=Path, default=defaults.output_directory)
     parser.add_argument("--r-max", type=float, default=defaults.r_max)
@@ -860,6 +997,7 @@ def main() -> None:
     args = parse_args()
     params = replace(
         TwoStreamParameters(),
+        dynamic_gr=args.dynamic_gr,
         output_directory=args.output_dir,
         r_max=args.r_max,
         plasma_r_min=args.plasma_r_min,

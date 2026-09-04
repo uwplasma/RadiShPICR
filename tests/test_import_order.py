@@ -74,6 +74,9 @@ def test_formulation_local_evolution_imports_are_available():
     from RadiShPICR.Z4C import (
         advance_vacuum_steps,
         compute_electrostatic_matter_terms,
+        kretschmann_scalar,
+        metric_rk4_step,
+        misner_sharp_mass,
         rk4_step,
     )
 
@@ -82,6 +85,9 @@ def test_formulation_local_evolution_imports_are_available():
     assert callable(step_rk4_with_metric)
     assert callable(advance_vacuum_steps)
     assert callable(compute_electrostatic_matter_terms)
+    assert callable(kretschmann_scalar)
+    assert callable(metric_rk4_step)
+    assert callable(misner_sharp_mass)
     assert callable(rk4_step)
     assert not hasattr(z4c, "electrostatic_particles_rk4_step")
     assert not hasattr(z4c, "particles_rk4_step")

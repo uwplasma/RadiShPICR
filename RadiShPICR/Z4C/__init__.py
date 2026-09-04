@@ -1,5 +1,9 @@
 """Z4C metric and time-evolution helpers for RadiShPICR."""
 
+from RadiShPICR.Z4C.curvature_invariants import (
+    kretschmann_scalar,
+    misner_sharp_mass,
+)
 from RadiShPICR.Z4C.electric_field import (
     compute_electrostatic_matter_terms,
     compute_radial_charge_density,
@@ -10,6 +14,7 @@ from RadiShPICR.Z4C.electric_field import (
 from RadiShPICR.Z4C.particle_boundaries import deleting_particle_boundary
 from RadiShPICR.Z4C.time_evolve import (
     advance_vacuum_steps,
+    metric_rk4_step,
     metric_time_derivatives,
     rk4_step,
 )
@@ -23,7 +28,10 @@ __all__ = [
     "compute_radial_lorentz_force",
     "deleting_particle_boundary",
     "electric_field_energy",
+    "kretschmann_scalar",
+    "metric_rk4_step",
     "metric_time_derivatives",
+    "misner_sharp_mass",
     "rk4_step",
     "solve_radial_electric_field",
 ]
