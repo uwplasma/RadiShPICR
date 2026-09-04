@@ -124,10 +124,9 @@ def _unbounded_raw_radial_shape_stencil(
     if shape_mode == "nearest":
         anchor = jnp.floor(floating_index + 0.5).astype(jnp.int32)
         raw_indices = anchor[jnp.newaxis, :]
-        raw_weights = (
-            jnp.abs(floating_index - anchor.astype(radial_positions.dtype))
-            < 0.5
-        )[jnp.newaxis, :].astype(radial_positions.dtype)
+        # The anchor already makes a deterministic right-sided choice at an
+        # exact half-cell tie, so every particle carries one full NGP weight.
+        raw_weights = jnp.ones_like(raw_indices, dtype=radial_positions.dtype)
     elif shape_mode == "linear":
         anchor = jnp.floor(floating_index).astype(jnp.int32)
         offsets = jnp.asarray([0, 1], dtype=anchor.dtype)
@@ -176,6 +175,15 @@ def _cell_centered_radial_shape_stencil(
     even_weights = jnp.where(valid, raw_weights, 0.0)
     reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
     odd_weights = even_weights * reflection_sign
+    if shape_mode == "nearest":
+        # At the parity fixed point the two equally near half cells represent
+        # opposite sides of the origin.  Even quantities retain unit weight;
+        # an odd radial field vanishes there.
+        odd_weights = jnp.where(
+            radial_positions[jnp.newaxis, :] == 0.0,
+            0.0,
+            odd_weights,
+        )
     origin_stencil = jnp.any(raw_indices < 0, axis=0)
 
     return indices, even_weights, odd_weights, origin_stencil
@@ -392,7 +400,12 @@ def shape_weights_at_point(
         return jnp.sum(weights_at_point, axis=0)
 
     if shape_mode == "nearest":
-        return jnp.where(jnp.abs(radial_positions - radial_coordinate) < 0.5 * dr, 1.0, 0.0)
+        offset = radial_positions - radial_coordinate
+        return jnp.where(
+            jnp.logical_and(offset >= -0.5 * dr, offset < 0.5 * dr),
+            1.0,
+            0.0,
+        )
 
     delta = (radial_positions - radial_coordinate) / dr
     if shape_mode == "linear":

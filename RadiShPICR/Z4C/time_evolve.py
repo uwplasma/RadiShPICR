@@ -10,6 +10,11 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
     compute_radial_matter_terms,
     initialize_vacuum_matter_terms,
 )
+from RadiShPICR.Z4C.electric_field import (
+    compute_radial_charge_density,
+    compute_radial_lorentz_force,
+    solve_radial_electric_field,
+)
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
 from RadiShPICR.Z4C.utils import (
     trace_free_curvature,
@@ -197,6 +202,142 @@ def _copy_particle_state(particles, r, phi, ur, uphi, weight=None):
         uphi=uphi,
         shape_mode=particles.shape_mode,
     )
+
+
+def _electrostatic_particle_derivatives(
+    particles,
+    metric,
+    ion_charge_density,
+    epsilon_0,
+):
+    """Return the charged-particle RHS on a fixed Z4C spatial slice."""
+
+    electron_charge_density = compute_radial_charge_density(particles, metric)
+    charge_density = electron_charge_density + ion_charge_density
+    E_r = solve_radial_electric_field(
+        metric,
+        charge_density,
+        epsilon_0=epsilon_0,
+    )
+
+    du_r_dt, du_phi_dt, dr_dt, dphi_dt = compute_geodesic_terms(
+        particles,
+        metric,
+    )
+    du_r_dt = du_r_dt + compute_radial_lorentz_force(
+        particles,
+        metric,
+        E_r,
+    )
+
+    return du_r_dt, du_phi_dt, dr_dt, dphi_dt
+
+
+def electrostatic_particles_rk4_step(
+    particles,
+    metric: Z4C_Metric,
+    ion_charge_density,
+    dt,
+    epsilon_0=1.0,
+):
+    """Advance charged particles with stage-centered electrostatic fields.
+
+    The Z4C metric is held fixed.  At every RK4 stage the electron charge is
+    deposited, added to the prescribed static-ion density, and used in a fresh
+    radial Gauss solve before the Lorentz force is gathered to the particles.
+    """
+
+    r0, phi0 = particles.get_positions()
+    ur0, uphi0 = particles.get_velocities()
+
+    k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt = (
+        _electrostatic_particle_derivatives(
+            particles,
+            metric,
+            ion_charge_density,
+            epsilon_0,
+        )
+    )
+
+    particles_k2 = _copy_particle_state(
+        particles,
+        r0 + 0.5 * dt * k1_dr_dt,
+        phi0 + 0.5 * dt * k1_dphi_dt,
+        ur0 + 0.5 * dt * k1_du_r_dt,
+        uphi0 + 0.5 * dt * k1_du_phi_dt,
+    )
+    k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt = (
+        _electrostatic_particle_derivatives(
+            particles_k2,
+            metric,
+            ion_charge_density,
+            epsilon_0,
+        )
+    )
+
+    particles_k3 = _copy_particle_state(
+        particles,
+        r0 + 0.5 * dt * k2_dr_dt,
+        phi0 + 0.5 * dt * k2_dphi_dt,
+        ur0 + 0.5 * dt * k2_du_r_dt,
+        uphi0 + 0.5 * dt * k2_du_phi_dt,
+    )
+    k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt = (
+        _electrostatic_particle_derivatives(
+            particles_k3,
+            metric,
+            ion_charge_density,
+            epsilon_0,
+        )
+    )
+
+    particles_k4 = _copy_particle_state(
+        particles,
+        r0 + dt * k3_dr_dt,
+        phi0 + dt * k3_dphi_dt,
+        ur0 + dt * k3_du_r_dt,
+        uphi0 + dt * k3_du_phi_dt,
+    )
+    k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt = (
+        _electrostatic_particle_derivatives(
+            particles_k4,
+            metric,
+            ion_charge_density,
+            epsilon_0,
+        )
+    )
+
+    particles.r = r0 + (dt / 6.0) * (
+        k1_dr_dt + 2.0 * k2_dr_dt + 2.0 * k3_dr_dt + k4_dr_dt
+    )
+    particles.phi = phi0 + (dt / 6.0) * (
+        k1_dphi_dt
+        + 2.0 * k2_dphi_dt
+        + 2.0 * k3_dphi_dt
+        + k4_dphi_dt
+    )
+    particles.ur = ur0 + (dt / 6.0) * (
+        k1_du_r_dt
+        + 2.0 * k2_du_r_dt
+        + 2.0 * k3_du_r_dt
+        + k4_du_r_dt
+    )
+    particles.uphi = uphi0 + (dt / 6.0) * (
+        k1_du_phi_dt
+        + 2.0 * k2_du_phi_dt
+        + 2.0 * k3_du_phi_dt
+        + k4_du_phi_dt
+    )
+
+    electron_charge_density = compute_radial_charge_density(particles, metric)
+    charge_density = electron_charge_density + ion_charge_density
+    E_r = solve_radial_electric_field(
+        metric,
+        charge_density,
+        epsilon_0=epsilon_0,
+    )
+
+    return particles, charge_density, E_r
 
 
 def particles_rk4_step(

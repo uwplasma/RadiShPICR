@@ -19,12 +19,14 @@ Features:
 - Fully self-consistent constraint-based relativity formulation.
 - Particle shape functions for spherical symmetry (first-order and second-order).
 - Radial electrostatic field solver.
+- Fixed-Minkowski Z4C electrostatic particle evolution with stage-centered
+  charge deposition, Gauss solve, and Lorentz forcing.
 
 Demos:
 - [ ] Single puncture black hole in Z4C.
 - [ ] Oppenheimer-Snyder collapse in constraint-based relativity.
 - [ ] Charged stellar collapse in constraint-based relativity.
-- [ ] Two stream instability in constraint-based relativity.
+- [X] Relativistic two-stream instability on a fixed Minkowski Z4C slice.
 
 STILL UNDER DEVELOPMENT.  The code is not yet ready for production use.
 
@@ -32,4 +34,6 @@ CHECKLIST:
 - [ ] Add more tests for the constraint-based relativity implementation.
 - [ ] Fix definition of angular position update in constraint-based relativity implementation.
 - [X] Finish implementation of single-puncture black hole in Z4C.
-- [ ] Add EM logic for Z4C.
+- [ ] Add dynamical Einstein-Maxwell logic and electromagnetic stress-energy
+  for evolved Z4C spacetimes.  The fixed-Minkowski electrostatic PIC path is
+  implemented separately as a validation baseline.

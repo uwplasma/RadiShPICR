@@ -1,61 +1,126 @@
-# Christopher Woolford Jul 28, 2026
-# This file contains my solver for the electric field
-# in a spherically symmetric Z4C numerical relativity simulation.
-
-# dE^r/dr = (-Gamma^r_{rr} E^r + rho )
-# equation for the radial electric field in a spherically symmetric
-# spacetime, where rho is the charge density and Gamma^r_{rr} is the
-# Christoffel symbol for the radial coordinate.
-
-# In this formulation, should be:
-# dE^r/dr = (-1/(2 * g_rr) * dg_rr/dr * E^r + rho )
-
-
-import jax
 import jax.numpy as jnp
-from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative, sixth_derivative
+
+from RadiShPICR.particles.particle_shapes import (
+    _cell_centered_radial_shape_stencil,
+)
+from RadiShPICR.Z4C.energy_momentum_tensor import _proper_radial_shell_volume
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
-def dE_dr(metric: Z4C_Metric, E_r, rho):
+def compute_radial_charge_density(particles, metric: Z4C_Metric):
+    """Deposit Eulerian charge density on the cell-centered radial grid.
+
+    The existing compact stencil discards support beyond the outer grid.  A
+    caller that requires exact charge conservation must therefore keep every
+    particle's complete shape support inside the radial domain.
     """
-    Compute the radial derivative of the electric field in a spherically symmetric spacetime.
 
-    Parameters:
-    metric (Z4C_Metric): The Z4C metric object containing the metric components.
-    E_r (array): The radial electric field.
-    rho (array): The charge density.
+    radial_positions, _ = particles.get_positions()
+    indices, even_weights, _, _ = _cell_centered_radial_shape_stencil(
+        radial_positions,
+        metric.r,
+        metric.dr,
+        particles.get_shape(),
+    )
 
-    Returns:
-    array: The radial derivative of the electric field.
+    deposited_charge = jnp.zeros_like(metric.r).at[indices].add(
+        even_weights * particles.get_charge()[jnp.newaxis, :]
+    )
+
+    return deposited_charge / _proper_radial_shell_volume(metric)
+
+
+def _fields_at_radial_faces(field):
+    """Interpolate a cell-centered metric field to radial cell faces."""
+
+    interior_faces = 0.5 * (field[:-1] + field[1:])
+    return jnp.concatenate((field[:1], interior_faces, field[-1:]))
+
+
+def solve_radial_electric_field(
+    metric: Z4C_Metric,
+    charge_density,
+    epsilon_0=1.0,
+):
+    """Solve spherical Gauss law for the covariant radial field ``E_r``.
+
+    Charge is accumulated through proper finite-volume shells.  The enclosed
+    charge fixes the physical normal field at every spherical face, with zero
+    flux at the origin.  Adjacent face values are averaged back to the Z4C
+    cell centers.
     """
-    grr = metric.conformal_grr
-    dgrrdr = first_derivative(grr, metric.dr, parity=1)
-    
-    # Compute the radial derivative of the electric field
-    dE_dr = (-1 / (2 * grr) * dgrrdr * E_r + rho)
-    
-    return dE_dr
+
+    proper_shell_volume = _proper_radial_shell_volume(metric)
+    shell_charge = charge_density * proper_shell_volume
+    enclosed_charge = jnp.concatenate(
+        (
+            jnp.zeros_like(shell_charge[:1]),
+            jnp.cumsum(shell_charge),
+        )
+    )
+
+    inner_face = jnp.maximum(metric.r[:1] - 0.5 * metric.dr, 0.0)
+    face_radius = jnp.concatenate((inner_face, metric.r + 0.5 * metric.dr))
+    conformal_grr_face = _fields_at_radial_faces(metric.conformal_grr)
+    conformal_gt_face = _fields_at_radial_faces(metric.conformal_gt)
+    chi_face = _fields_at_radial_faces(metric.chi)
+
+    physical_face_area = (
+        4.0 * jnp.pi * face_radius**2 * conformal_gt_face / chi_face
+    )
+    nonzero_area = physical_face_area > 0.0
+    safe_face_area = jnp.where(nonzero_area, physical_face_area, 1.0)
+    normal_electric_field = jnp.where(
+        nonzero_area,
+        enclosed_charge / (epsilon_0 * safe_face_area),
+        0.0,
+    )
+    covariant_electric_field_face = (
+        jnp.sqrt(conformal_grr_face / chi_face) * normal_electric_field
+    )
+
+    return 0.5 * (
+        covariant_electric_field_face[:-1]
+        + covariant_electric_field_face[1:]
+    )
 
 
-def compute_E_r(metric: Z4C_Metric, rho):
-    # E_r(r=0) = 0
-    # RK2 integration of dE^r/dr = (-Gamma^r_{rr} E^r + rho )
-    # with initial condition E^r(r=0) = 0
+def compute_radial_lorentz_force(particles, metric: Z4C_Metric, E_r):
+    """Return the electrostatic contribution to ``du_r / dt``.
 
-    dr = metric.dr
-    r = metric.r
+    Lapse and electric field use the same cell-centered compact stencil as
+    charge deposition.  The lapse has even origin parity and ``E_r`` has odd
+    parity, preserving deposit/gather consistency on the guarded domain.
+    """
 
-    def heun_step(E_r, i):
-        k1 = dE_dr(metric, E_r, rho[i])
-        k2 = dE_dr(metric, E_r + dr * k1, rho[i])
-        return E_r + (dr / 2) * (k1 + k2)
-    # Use Heun's method (RK2) to integrate the electric field equation
+    radial_positions, _ = particles.get_positions()
+    indices, even_weights, odd_weights, _ = (
+        _cell_centered_radial_shape_stencil(
+            radial_positions,
+            metric.r,
+            metric.dr,
+            particles.get_shape(),
+        )
+    )
+    lapse_at_particle = jnp.sum(metric.alpha[indices] * even_weights, axis=0)
+    electric_field_at_particle = jnp.sum(E_r[indices] * odd_weights, axis=0)
 
-    vmapped_heun_step = jax.vmap(heun_step, in_axes=(0, 0), out_axes=0)
-    # Initialize the electric field array with zeros and perform the integration
+    charge, mass, weight = jnp.broadcast_arrays(
+        particles.charges,
+        particles.masses,
+        particles.weight,
+    )
+    active_particle = jnp.logical_and(mass != 0.0, weight != 0.0)
+    safe_mass = jnp.where(active_particle, mass, 1.0)
+    charge_to_mass = jnp.where(active_particle, charge / safe_mass, 0.0)
 
-    E_r = jnp.zeros_like(r)
-    E_r = vmapped_heun_step(E_r, jnp.arange(len(r)))
-    # Return the computed radial electric field
-    return E_r
+    return lapse_at_particle * charge_to_mass * electric_field_at_particle
+
+
+def electric_field_energy(metric: Z4C_Metric, E_r, epsilon_0=1.0):
+    """Return the total electrostatic energy on the radial slice."""
+
+    inverse_radial_metric = metric.chi / metric.conformal_grr
+    energy_density = 0.5 * epsilon_0 * inverse_radial_metric * E_r**2
+
+    return jnp.sum(energy_density * _proper_radial_shell_volume(metric))
