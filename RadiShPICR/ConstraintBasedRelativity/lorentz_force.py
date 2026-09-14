@@ -1,7 +1,7 @@
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.geodesic import isotropic_particle_radius
-from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
+from RadiShPICR.particles.shape_factors.cartesian_shapes import interpolate_fields_to_particles
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 
 

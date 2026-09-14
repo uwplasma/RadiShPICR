@@ -9,7 +9,7 @@ from RadiShPICR.ConstraintBasedRelativity.evolve import (
     step_rk4,
     step_rk4_with_metric,
 )
-from RadiShPICR.particles.particle_shapes import interpolate_field_to_particles
+from RadiShPICR.particles.shape_factors.cartesian_shapes import interpolate_field_to_particles
 from RadiShPICR.ConstraintBasedRelativity import build_radial_grid, calculate_metric
 from RadiShPICR.ConstraintBasedRelativity.energy_momentum_tensor import Srr_at_point, Sr_at_point
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid

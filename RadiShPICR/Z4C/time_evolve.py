@@ -36,16 +36,27 @@ def metric_time_derivatives(
     metric: Z4C_Metric,
     matter_terms,
     metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+    zero_shift=0,
 ):
+    """Compute the Z4C RHS; ``zero_shift=1`` freezes the supplied shift."""
     zeros = jnp.zeros_like(metric.r)
     zero_dr = jnp.zeros_like(metric.dr)
     apply_sommerfeld_boundary = (
         metric_boundary != METRIC_BOUNDARY_CONSTRAINT_PRESERVING
     )
 
+    beta_rhs = jax.lax.cond(
+        zero_shift,
+        lambda _: jnp.zeros_like(metric.beta),
+        lambda _: dbetadt(metric, matter_terms, apply_sommerfeld_boundary),
+        operand=None,
+    )
+    # Freeze the full shift RHS, including dissipation and boundary updates.
+    # Its fixed profile still contributes to the other evolution equations.
+
     derivatives = Z4C_Metric(
         alpha=dalphadt(metric, matter_terms, apply_sommerfeld_boundary),
-        beta=dbetadt(metric, matter_terms, apply_sommerfeld_boundary),
+        beta=beta_rhs,
         conformal_grr=dgrrdt(
             metric,
             matter_terms,
@@ -157,22 +168,26 @@ def metric_rk4_step(
     matter_terms,
     dt,
     metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+    zero_shift=0,
 ):
-    """Advance the Z4C metric with fixed matter terms using classic RK4."""
+    """Advance Z4C with fixed matter using RK4; optionally freeze the shift.
+
+    ``zero_shift=1`` keeps the supplied beta profile fixed at every stage.
+    """
 
     metric = _enforce_algebraic_constraints(metric)
     # Every RK right-hand side is evaluated from a constraint-projected metric.
 
-    k1 = metric_time_derivatives(metric, matter_terms, metric_boundary)
+    k1 = metric_time_derivatives(metric, matter_terms, metric_boundary, zero_shift)
 
     metric_k2 = _add_metric_derivative(metric, k1, 0.5 * dt)
-    k2 = metric_time_derivatives(metric_k2, matter_terms, metric_boundary)
+    k2 = metric_time_derivatives(metric_k2, matter_terms, metric_boundary, zero_shift)
 
     metric_k3 = _add_metric_derivative(metric, k2, 0.5 * dt)
-    k3 = metric_time_derivatives(metric_k3, matter_terms, metric_boundary)
+    k3 = metric_time_derivatives(metric_k3, matter_terms, metric_boundary, zero_shift)
 
     metric_k4 = _add_metric_derivative(metric, k3, dt)
-    k4 = metric_time_derivatives(metric_k4, matter_terms, metric_boundary)
+    k4 = metric_time_derivatives(metric_k4, matter_terms, metric_boundary, zero_shift)
 
     weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
 
@@ -282,6 +297,7 @@ def _stage_derivatives(
     GR_on,
     metric_boundary,
     inner_open,
+    zero_shift,
 ):
     _, _, lorentz_force, field_matter = _electrostatic_stage_state(
         particles,
@@ -306,7 +322,7 @@ def _stage_derivatives(
         else:
             particle_matter = compute_radial_matter_terms(particles, metric)
         matter_terms = _add_matter_terms(particle_matter, field_matter)
-        return metric_time_derivatives(metric, matter_terms, metric_boundary)
+        return metric_time_derivatives(metric, matter_terms, metric_boundary, zero_shift)
 
     metric_derivative = jax.lax.cond(
         GR_on,
@@ -372,6 +388,7 @@ def rk4_step(
     epsilon_0=1.0,
     particle_boundary=None,
     metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+    zero_shift=0,
 ):
     """Advance particles, electrostatics, and Z4C with one RK4 tableau.
 
@@ -379,6 +396,8 @@ def rk4_step(
     gravitational sources are recomputed from matching particle and metric
     states at every RK stage.  With ``GR_on=False`` the supplied metric is
     used as a static background without algebraic projection.
+    ``zero_shift=1`` freezes only the supplied beta profile while the other
+    fields evolve when ``GR_on=True``.  It is also a runtime JAX flag.
     ``particle_boundary`` receives ``(stage_particles, stage_metric)`` before
     each stage derivative and once more after the final update.
     """
@@ -404,6 +423,7 @@ def rk4_step(
         GR_on,
         metric_boundary,
         inner_open,
+        zero_shift,
     )
     k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt = k1
 
@@ -425,6 +445,7 @@ def rk4_step(
         GR_on,
         metric_boundary,
         inner_open,
+        zero_shift,
     )
     k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt = k2
 
@@ -447,6 +468,7 @@ def rk4_step(
         GR_on,
         metric_boundary,
         inner_open,
+        zero_shift,
     )
     k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt = k3
 
@@ -469,6 +491,7 @@ def rk4_step(
         GR_on,
         metric_boundary,
         inner_open,
+        zero_shift,
     )
     k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt = k4
 
@@ -529,8 +552,9 @@ def advance_vacuum_steps(
     dt,
     num_steps,
     metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+    zero_shift=0,
 ):
-    """Advance several exact-vacuum Z4C steps in one compiled scan."""
+    """Advance exact-vacuum Z4C steps, preserving beta if ``zero_shift=1``."""
 
     def advance_one_step(carry, local_step):
         metric, first_nonfinite_step = carry
@@ -540,6 +564,7 @@ def advance_vacuum_steps(
             matter_terms,
             dt,
             metric_boundary,
+            zero_shift,
         )
         finite = _metric_fields_finite(metric)
         first_nonfinite_step = jnp.where(

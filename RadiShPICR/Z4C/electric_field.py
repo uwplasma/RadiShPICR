@@ -1,12 +1,16 @@
 import jax.numpy as jnp
 
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
+)
+from RadiShPICR.particles.shape_factors import (
+    particle_deposition_stencil,
+)
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _cell_centered_radial_shape_stencil,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
-    _proper_radial_shell_volume,
-    _radial_particle_deposition_stencil,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -25,7 +29,7 @@ def compute_radial_charge_density(
     the radial domain.
     """
 
-    indices, even_weights, _ = _radial_particle_deposition_stencil(
+    indices, even_weights, _ = particle_deposition_stencil(
         particles,
         metric,
         inner_open,
@@ -35,7 +39,7 @@ def compute_radial_charge_density(
         even_weights * particles.get_charge()[jnp.newaxis, :]
     )
 
-    return deposited_charge / _proper_radial_shell_volume(metric)
+    return deposited_charge / proper_radial_shell_volume(metric)
 
 
 def _fields_at_radial_faces(field):
@@ -58,7 +62,7 @@ def solve_radial_electric_field(
     cell centers.
     """
 
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
     shell_charge = charge_density * proper_shell_volume
     enclosed_charge = jnp.concatenate(
         (
@@ -164,4 +168,4 @@ def electric_field_energy(metric: Z4C_Metric, E_r, epsilon_0=1.0):
     inverse_radial_metric = metric.chi / metric.conformal_grr
     energy_density = 0.5 * epsilon_0 * inverse_radial_metric * E_r**2
 
-    return jnp.sum(energy_density * _proper_radial_shell_volume(metric))
+    return jnp.sum(energy_density * proper_radial_shell_volume(metric))

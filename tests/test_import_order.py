@@ -3,6 +3,25 @@ import subprocess
 import sys
 
 
+def test_shape_factors_import_without_loading_z4c():
+    result = subprocess.run(
+        [sys.executable, "-c", (
+            "import sys; "
+            "from RadiShPICR.particles.shape_factors import "
+            "metric_corrected_cic_stencil, metric_corrected_quadratic_stencil; "
+            "from RadiShPICR.particles.shape_factors.cartesian_shapes import "
+            "interpolate_field_to_particles; "
+            "assert 'RadiShPICR.Z4C' not in sys.modules; "
+            "import RadiShPICR.Z4C"
+        )],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0
+
+
 def test_package_defaults_to_jax_x64_when_environment_is_unset():
     env = os.environ.copy()
     env.pop("JAX_ENABLE_X64", None)

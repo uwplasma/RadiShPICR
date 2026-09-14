@@ -1,19 +1,25 @@
 import jax
 import jax.numpy as jnp
 
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
+    proper_radial_shell_quadrature,
+    metric_correction_coefficients,
+)
+from RadiShPICR.particles.shape_factors.metric_correct_quadratic import (
+    raw_quadratic_stencil,
+)
+from RadiShPICR.particles.shape_factors import (
+    particle_deposition_stencil,
+)
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.particles import particle_species
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _unbounded_raw_radial_shape_stencil,
     interpolate_field_to_particles,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
-    _density_conserving_quadratic_coefficients,
-    _density_conserving_quadratic_stencil,
-    _proper_radial_shell_volume,
-    _proper_radial_shell_quadrature,
-    _radial_particle_deposition_stencil,
     compute_radial_momentum_density,
     compute_radial_stress_tensor_component,
     compute_radial_matter_terms,
@@ -116,7 +122,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
             grid,
             shape_mode=shape_mode,
         )
-        proper_shell_volume = _proper_radial_shell_volume(metric)
+        proper_shell_volume = proper_radial_shell_volume(metric)
         gamma_rr_inv_p = 1.0 / grr_p
         lorentz_factor = jnp.sqrt(
             1.0
@@ -124,7 +130,7 @@ def test_sparse_matter_deposition_matches_dense_reference():
             + particles.uphi**2 / (r_particle**2 * gt_p)
         )
         indices, even_weights, odd_weights = (
-            _radial_particle_deposition_stencil(
+            particle_deposition_stencil(
                 particles,
                 metric,
                 False,
@@ -253,7 +259,7 @@ def test_matter_stress_trace_and_zero_angular_momentum_limit():
         + gamma_rr_inv * ur[0] ** 2
         + gamma_t_inv * particles.uphi[0] ** 2 / rp**2
     )
-    proper_shell_volume = _proper_radial_shell_volume(metric)[particle_index]
+    proper_shell_volume = proper_radial_shell_volume(metric)[particle_index]
     particle_mass = particles.get_mass()[0]
     stress_trace = (
         gamma_rr_inv * matter_terms.Srr[particle_index]
@@ -309,7 +315,7 @@ def test_cell_centered_origin_deposition_uses_even_and_odd_parity():
     r_particle = r[:1]
     ur = jnp.ones_like(r_particle)
     lorentz_factor = jnp.sqrt(2.0)
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
 
     expected_even_numerators = {
         "nearest": jnp.asarray([1.0, 0.0]),
@@ -391,7 +397,7 @@ def test_open_inner_matter_deposition_discards_the_ghost_shape_share():
         uphi=jnp.asarray([0.0]),
         shape_mode="quadratic",
     )
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
 
     parity_matter = compute_radial_matter_terms(particles, metric)
     open_matter = compute_radial_matter_terms(particles, metric, True)
@@ -403,7 +409,7 @@ def test_open_inner_matter_deposition_discards_the_ghost_shape_share():
 
     parity_energy = jnp.sum(parity_matter.rho * proper_shell_volume)
     open_energy = jnp.sum(open_matter.rho * proper_shell_volume)
-    raw_indices, corrected_weights = _density_conserving_quadratic_stencil(
+    raw_indices, corrected_weights = raw_quadratic_stencil(
         particles.r,
         metric,
         True,
@@ -447,7 +453,7 @@ def test_uniform_density_is_grid_independent_including_inner_shell():
             r=r,
             dr=jnp.asarray(dr),
         )
-        proper_shell_volume = _proper_radial_shell_volume(metric)
+        proper_shell_volume = proper_radial_shell_volume(metric)
         particles = particle_species(
             name="uniform",
             charge=0.0,
@@ -507,7 +513,7 @@ def test_density_conserving_quadratic_quiet_start_is_uniform_at_origin():
             dr=r[1] - r[0],
         )
         quadrature_radius, quadrature_volume = (
-            _proper_radial_shell_quadrature(metric)
+            proper_radial_shell_quadrature(metric)
         )
         particles = particle_species(
             name="proper-volume quiet start",
@@ -566,12 +572,12 @@ def test_density_conserving_quadratic_weights_preserve_tsc_contract():
     radial_positions = r[1:-3] + 0.37 * metric.dr
 
     for inner_open in (False, True):
-        indices, corrected_weights = _density_conserving_quadratic_stencil(
+        indices, corrected_weights = raw_quadratic_stencil(
             radial_positions,
             metric,
             inner_open,
         )
-        beta = _density_conserving_quadratic_coefficients(
+        beta = metric_correction_coefficients(
             metric,
             inner_open,
         )
@@ -584,7 +590,7 @@ def test_density_conserving_quadratic_weights_preserve_tsc_contract():
         assert jnp.abs(beta[-1]) < 3.0e-3
 
         far_positions = radial_positions[-8:]
-        _, far_corrected_weights = _density_conserving_quadratic_stencil(
+        _, far_corrected_weights = raw_quadratic_stencil(
             far_positions,
             metric,
             inner_open,
@@ -599,7 +605,7 @@ def test_density_conserving_quadratic_weights_preserve_tsc_contract():
             jnp.abs(far_corrected_weights - far_tsc_weights)
         ) < 8.0e-4
 
-        _, center_corrected_weights = _density_conserving_quadratic_stencil(
+        _, center_corrected_weights = raw_quadratic_stencil(
             r[1:-3],
             metric,
             inner_open,
@@ -613,7 +619,7 @@ def test_density_conserving_quadratic_weights_preserve_tsc_contract():
         assert jnp.allclose(center_corrected_weights, center_tsc_weights)
 
     steep_metric = metric._replace(chi=jnp.exp(0.5 * metric.r))
-    steep_beta = _density_conserving_quadratic_coefficients(
+    steep_beta = metric_correction_coefficients(
         steep_metric,
         True,
     )
@@ -622,7 +628,7 @@ def test_density_conserving_quadratic_weights_preserve_tsc_contract():
         + metric.dr
         * jnp.asarray((0.1, 0.25, 0.5, 0.75, 0.9))[jnp.newaxis, :]
     ).reshape(-1)
-    _, steep_weights = _density_conserving_quadratic_stencil(
+    _, steep_weights = raw_quadratic_stencil(
         steep_positions,
         steep_metric,
         True,

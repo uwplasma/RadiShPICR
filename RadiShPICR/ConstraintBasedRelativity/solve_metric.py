@@ -12,7 +12,7 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
     total_particle_mass,
     vacuum_rescale_factors,
 )
-from RadiShPICR.particles.particle_shapes import radial_shape_stencil
+from RadiShPICR.particles.shape_factors.cartesian_shapes import radial_shape_stencil
 
 
 def dr_A(U_state):

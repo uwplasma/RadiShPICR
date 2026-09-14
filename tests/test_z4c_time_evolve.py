@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import pytest
 
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.energy_momentum_tensor import MatterTerms
@@ -96,6 +97,121 @@ def _assert_algebraic_constraints(metric):
     assert jnp.allclose(curvature_trace, 0.0, atol=1.0e-6)
 
 
+@pytest.mark.parametrize("metric_boundary", [0, 1])
+@pytest.mark.parametrize("beta_amplitude", [0.0, 0.01])
+def test_zero_shift_freezes_only_beta_rhs(metric_boundary, beta_amplitude):
+    from RadiShPICR.Z4C.time_evolve import metric_time_derivatives
+
+    r = (jnp.arange(16) + 0.5) * 0.25
+    metric = _flat_metric(r)._replace(
+        beta=beta_amplitude * r * jnp.exp(-r**2),
+        Gamma=0.02 * r * jnp.exp(-r**2),
+        Kh=jnp.full_like(r, 0.01),
+        nu=jnp.asarray(0.02),
+    )
+    matter = initialize_vacuum_matter_terms(metric)
+    rhs = jax.jit(metric_time_derivatives)
+    default = rhs(metric, matter, metric_boundary)
+    evolved = rhs(metric, matter, metric_boundary, jnp.asarray(0))
+    frozen = rhs(metric, matter, metric_boundary, jnp.asarray(1))
+    frozen_bool = rhs(metric, matter, metric_boundary, True)
+
+    assert jnp.any(evolved.beta != 0.0)
+    assert jnp.array_equal(frozen.beta, jnp.zeros_like(metric.beta))
+    for name in metric._fields:
+        assert jnp.array_equal(getattr(default, name), getattr(evolved, name))
+        assert jnp.array_equal(getattr(frozen, name), getattr(frozen_bool, name))
+        if name != "beta":
+            assert jnp.array_equal(getattr(frozen, name), getattr(evolved, name))
+
+
+@pytest.mark.parametrize("coupled", [False, True])
+@pytest.mark.parametrize("metric_boundary", [0, 1])
+def test_zero_shift_is_fixed_at_every_rk_stage(monkeypatch, coupled, metric_boundary):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    r = (jnp.arange(16) + 0.5) * 0.25
+    metric = _flat_metric(r)._replace(
+        beta=0.01 * r * jnp.exp(-r**2),
+        Gamma=0.02 * r * jnp.exp(-r**2),
+        Kh=jnp.full_like(r, 0.01),
+    )
+    original_rhs = time_evolve.metric_time_derivatives
+    stage_shifts = []
+
+    def record_rhs(stage_metric, matter, metric_boundary=0, zero_shift=0):
+        stage_shifts.append(stage_metric.beta)
+        return original_rhs(stage_metric, matter, metric_boundary, zero_shift)
+
+    monkeypatch.setattr(time_evolve, "metric_time_derivatives", record_rhs)
+    particles = _make_particles()
+    updated = metric
+    with jax.disable_jit():
+        for _ in range(2):
+            if coupled:
+                particles, updated, _, _ = time_evolve.rk4_step(
+                    particles, updated, 1.0e-4, EM_on=False, GR_on=True,
+                    metric_boundary=metric_boundary, zero_shift=1,
+                )
+            else:
+                updated = time_evolve.metric_rk4_step(
+                    updated, initialize_vacuum_matter_terms(updated), 1.0e-4,
+                    metric_boundary=metric_boundary, zero_shift=1,
+                )
+
+    assert len(stage_shifts) == 8
+    for beta in stage_shifts:
+        assert jnp.array_equal(beta, metric.beta)
+    assert jnp.array_equal(updated.beta, metric.beta)
+    assert jnp.any(updated.alpha != metric.alpha)
+    assert jnp.any(updated.Gamma != metric.Gamma)
+
+
+@pytest.mark.parametrize("metric_boundary", [0, 1])
+@pytest.mark.parametrize("beta_amplitude", [0.0, 0.01])
+def test_compiled_zero_shift_steps(metric_boundary, beta_amplitude):
+    from RadiShPICR.Z4C.time_evolve import (
+        advance_vacuum_steps, metric_rk4_step, rk4_step,
+    )
+
+    r = (jnp.arange(16) + 0.5) * 0.25
+    metric = _flat_metric(r)._replace(
+        beta=beta_amplitude * r * jnp.exp(-r**2),
+        Gamma=0.02 * r * jnp.exp(-r**2),
+        Kh=jnp.full_like(r, 0.01),
+    )
+    matter = initialize_vacuum_matter_terms(metric)
+    metric_step = jax.jit(metric_rk4_step)
+    coupled_step = jax.jit(rk4_step)
+    scan = jax.jit(advance_vacuum_steps, static_argnames=("num_steps",))
+
+    # Toggle the same compiled stepping functions using runtime scalar flags.
+    for zero_shift in (0, 1):
+        flag = jnp.asarray(zero_shift)
+        fixed_matter = metric_step(metric, matter, 1.0e-4, metric_boundary, flag)
+        _, coupled, _, _ = coupled_step(
+            _make_particles(), metric, 1.0e-4, EM_on=True, GR_on=True,
+            metric_boundary=metric_boundary, zero_shift=flag,
+        )
+        vacuum, first_nonfinite = scan(
+            metric, 1.0e-4, num_steps=3,
+            metric_boundary=metric_boundary, zero_shift=flag,
+        )
+        assert first_nonfinite == -1
+        for updated in (fixed_matter, coupled, vacuum):
+            assert jnp.array_equal(updated.beta, metric.beta) == bool(zero_shift)
+            assert jnp.any(updated.alpha != metric.alpha)
+            assert jnp.all(jnp.isfinite(updated.alpha))
+
+    for flag in (0, 1):
+        _, static, _, _ = coupled_step(
+            _make_particles(), metric, 1.0e-4, EM_on=False, GR_on=False,
+            metric_boundary=metric_boundary, zero_shift=jnp.asarray(flag),
+        )
+        for actual, initial in zip(static, metric):
+            assert jnp.array_equal(actual, initial)
+
+
 def test_unit_determinant_conformal_metric_is_idempotent():
     from RadiShPICR.Z4C.utils import unit_determinant_conformal_metric
 
@@ -183,6 +299,7 @@ def test_metric_rk4_step_uses_fixed_matter_and_classic_stage_weights(monkeypatch
         stage_metric,
         stage_matter,
         metric_boundary=0,
+        zero_shift=0,
     ):
         stage_matter_terms.append(stage_matter)
         stage_value = stage_values.pop(0)
@@ -222,6 +339,7 @@ def test_metric_rk4_step_projects_every_metric_stage(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         stage_metrics.append(stage_metric)
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
@@ -369,6 +487,7 @@ def test_rk4_step_projects_every_metric_stage(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         stage_metrics.append(stage_metric)
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
@@ -413,6 +532,7 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         stage_value = stage_values.pop(0)
         zeros = jnp.zeros_like(stage_metric.r)
@@ -496,6 +616,7 @@ def test_rk4_step_projects_every_gr_metric_stage(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
 
@@ -569,6 +690,7 @@ def test_rk4_step_keeps_unrestricted_standard_particle_state(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         return _metric_derivative(stage_metric, alpha_value=1.0)
 
@@ -645,6 +767,7 @@ def test_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         derivative_stage_rho.append(stage_matter_terms.rho[0])
         return _metric_derivative(stage_metric, alpha_value=1.0)
@@ -1020,6 +1143,7 @@ def test_particle_boundary_receives_matching_rk_stage_metric(monkeypatch):
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         return _metric_derivative(stage_metric, alpha_value=1.0)
 
@@ -1079,6 +1203,7 @@ def test_areal_inner_boundary_uses_open_matter_deposition_at_every_stage(
         stage_metric,
         stage_matter_terms,
         metric_boundary=0,
+        zero_shift=0,
     ):
         return _metric_derivative(stage_metric, alpha_value=0.0)
 

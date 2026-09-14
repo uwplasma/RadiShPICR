@@ -1,5 +1,6 @@
 import jax
 import jax.numpy as jnp
+import pytest
 
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
@@ -125,7 +126,8 @@ def test_jitted_neutral_electrostatic_step_preserves_flat_free_motion():
         assert jnp.array_equal(metric_field, initial_field)
 
 
-def test_one_jitted_step_accepts_all_runtime_em_and_gr_modes():
+@pytest.mark.parametrize("zero_shift", [0, 1])
+def test_one_jitted_step_accepts_all_runtime_em_and_gr_modes(zero_shift):
     from RadiShPICR.Z4C.time_evolve import rk4_step
 
     metric = _flat_metric(num_cells=8, dr=0.5)
@@ -140,6 +142,7 @@ def test_one_jitted_step_accepts_all_runtime_em_and_gr_modes():
                 1.0e-3,
                 EM_on=jnp.asarray(EM_on),
                 GR_on=jnp.asarray(GR_on),
+                zero_shift=jnp.asarray(zero_shift),
             )
             updated_particles, updated_metric, charge_density, E_r = updated
 
@@ -185,7 +188,7 @@ def test_em_and_gr_add_field_stress_energy_at_matching_rk_stages(monkeypatch):
         zeros = jnp.zeros_like(stage_particles.r)
         return zeros, zeros, zeros, zeros
 
-    def derivative_from_energy(stage_metric, matter_terms, metric_boundary=0):
+    def derivative_from_energy(stage_metric, matter_terms, metric_boundary=0, zero_shift=0):
         zeros = jnp.zeros_like(stage_metric.r)
         return Z4C_Metric(
             alpha=matter_terms.rho,

@@ -1,3 +1,5 @@
+"""Original coordinate-space shapes and radial interpolation conventions."""
+
 from functools import partial
 
 import jax
@@ -411,8 +413,8 @@ def shape_weights_at_point(
     """Evaluate particle weights at one radial coordinate.
 
     When ``grid`` is supplied, the weights use the same clipped and normalized
-    interior stencil as deposition and interpolation. The no-grid path retains
-    the unbounded pointwise evaluation used by the current Z4C matter terms.
+    interior stencil as deposition and interpolation. The no-grid path uses
+    the original unbounded coordinate-space shape, without metric correction.
     """
 
     if grid is not None:

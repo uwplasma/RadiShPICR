@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from RadiShPICR.particles.particle_shapes import shape_weights_at_point
+from RadiShPICR.particles.shape_factors.cartesian_shapes import shape_weights_at_point
 from RadiShPICR.ConstraintBasedRelativity.utils import radial_shell_volume
 
 

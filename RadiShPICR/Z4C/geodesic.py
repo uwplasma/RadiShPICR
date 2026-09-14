@@ -2,7 +2,7 @@ import jax
 import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _interpolate_cell_centered_fields_to_particles,
 )
 from RadiShPICR.Z4C.derivatives import first_derivative

@@ -5,7 +5,7 @@ from jax import lax
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import dr_A, dr_alpha
 from RadiShPICR.ConstraintBasedRelativity.utils import angular_lorentz_term
-from RadiShPICR.particles.particle_shapes import interpolate_fields_to_particles
+from RadiShPICR.particles.shape_factors.cartesian_shapes import interpolate_fields_to_particles
 
 
 def _field_interpolation_grid(r_grid):

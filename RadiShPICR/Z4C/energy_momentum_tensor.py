@@ -3,16 +3,18 @@ from typing import NamedTuple
 import jax
 import jax.numpy as jnp
 
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
+)
+from RadiShPICR.particles.shape_factors import (
+    particle_deposition_stencil,
+)
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
-from RadiShPICR.particles.particle_shapes import (
-    _cell_centered_radial_shape_stencil,
-    _cell_centered_open_inner_shape_stencil,
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _interpolate_cell_centered_fields_to_particles,
-    _unbounded_raw_radial_shape_stencil,
 )
-from RadiShPICR.Z4C.particle_boundaries import _inner_areal_radius_index
 
 
 class MatterTerms(NamedTuple):
@@ -52,286 +54,6 @@ def initialize_vacuum_matter_terms(metric):
         Stt=zeros,
         Sr=zeros,
         St=zeros,
-    )
-
-
-def _proper_radial_shell_volume(metric):
-    inner_radius = jnp.maximum(metric.r - 0.5 * metric.dr, 0.0)
-    outer_radius = metric.r + 0.5 * metric.dr
-    coordinate_volume = (4.0 * jnp.pi / 3.0) * (
-        outer_radius**3 - inner_radius**3
-    )
-
-    proper_volume_factor = (
-        jnp.sqrt(metric.conformal_grr)
-        * metric.conformal_gt
-        / metric.chi**1.5
-    )
-
-    return coordinate_volume * proper_volume_factor
-
-
-def _proper_radial_shell_quadrature(metric):
-    """Return proper-volume quadrature on both halves of every shell."""
-
-    gauss_abscissae = jnp.asarray(
-        (-jnp.sqrt(3.0 / 5.0), 0.0, jnp.sqrt(3.0 / 5.0)),
-        dtype=metric.r.dtype,
-    )
-    gauss_weights = jnp.asarray(
-        (5.0 / 9.0, 8.0 / 9.0, 5.0 / 9.0),
-        dtype=metric.r.dtype,
-    )
-
-    inner_radius = jnp.maximum(metric.r - 0.5 * metric.dr, 0.0)
-    outer_radius = metric.r + 0.5 * metric.dr
-
-    # The Ruyten transfer changes intervals at a grid center.  Integrate the
-    # two polynomial pieces separately with the same cell-centered metric
-    # factor used by the production finite-volume shell.
-    segment_inner = jnp.stack((inner_radius, metric.r), axis=1)
-    segment_outer = jnp.stack((metric.r, outer_radius), axis=1)
-    segment_center = 0.5 * (segment_inner + segment_outer)
-    segment_half_width = 0.5 * (segment_outer - segment_inner)
-
-    quadrature_radius = (
-        segment_center[:, :, jnp.newaxis]
-        + segment_half_width[:, :, jnp.newaxis]
-        * gauss_abscissae[jnp.newaxis, jnp.newaxis, :]
-    )
-    proper_volume_factor = (
-        jnp.sqrt(metric.conformal_grr)
-        * metric.conformal_gt
-        / metric.chi**1.5
-    )
-    quadrature_volume = (
-        4.0
-        * jnp.pi
-        * proper_volume_factor[:, jnp.newaxis, jnp.newaxis]
-        * quadrature_radius**2
-        * segment_half_width[:, :, jnp.newaxis]
-        * gauss_weights[jnp.newaxis, jnp.newaxis, :]
-    )
-
-    return quadrature_radius.reshape(-1), quadrature_volume.reshape(-1)
-
-
-def _density_conserving_quadratic_coefficients(metric, inner_open):
-    """Solve the radial Ruyten transfer recurrence for quadratic TSC."""
-
-    quadrature_radius, quadrature_volume = _proper_radial_shell_quadrature(
-        metric
-    )
-    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
-        quadrature_radius,
-        metric.r,
-        metric.dr,
-        shape_mode="quadratic",
-    )
-
-    def open_inner_weights(_):
-        valid = jnp.logical_and(
-            raw_indices >= 0,
-            raw_indices < metric.r.shape[0],
-        )
-        indices = jnp.clip(raw_indices, 0, metric.r.shape[0] - 1)
-        return indices, jnp.where(valid, raw_weights, 0.0)
-
-    def parity_origin_weights(_):
-        reflected_indices = jnp.where(
-            raw_indices < 0,
-            -raw_indices - 1,
-            raw_indices,
-        )
-        valid = reflected_indices < metric.r.shape[0]
-        indices = jnp.clip(
-            reflected_indices,
-            0,
-            metric.r.shape[0] - 1,
-        )
-        return indices, jnp.where(valid, raw_weights, 0.0)
-
-    indices, retained_weights = jax.lax.cond(
-        inner_open,
-        open_inner_weights,
-        parity_origin_weights,
-        operand=None,
-    )
-    uncorrected_shell_volume = jnp.zeros_like(metric.r).at[indices].add(
-        retained_weights * quadrature_volume[jnp.newaxis, :]
-    )
-
-    floating_index = (quadrature_radius - metric.r[0]) / metric.dr
-    lower_index = jnp.floor(floating_index).astype(jnp.int32)
-    upper_fraction = floating_index - lower_index.astype(metric.r.dtype)
-    valid_interval = jnp.logical_and(
-        lower_index >= 0,
-        lower_index < metric.r.shape[0] - 1,
-    )
-    interval_index = jnp.clip(lower_index, 0, metric.r.shape[0] - 2)
-    interval_moment = jnp.zeros_like(metric.r[:-1]).at[interval_index].add(
-        jnp.where(
-            valid_interval,
-            quadrature_volume * upper_fraction * (1.0 - upper_fraction),
-            0.0,
-        )
-    )
-
-    shell_volume_error = (
-        _proper_radial_shell_volume(metric)[:-1]
-        - uncorrected_shell_volume[:-1]
-    )
-    beta_limit = 1.5 * (
-        1.0 - 8.0 * jnp.finfo(metric.r.dtype).eps
-    )
-
-    def solve_one_interval(previous_transfer, interval_data):
-        volume_error, volume_moment = interval_data
-        unconstrained_beta = (
-            volume_error + previous_transfer
-        ) / volume_moment
-        # |beta| < 3/2 is the sharp bound that keeps all three quadratic
-        # weights positive throughout the interval between grid centers.
-        beta = jnp.clip(
-            unconstrained_beta,
-            -beta_limit,
-            beta_limit,
-        )
-        transfer = beta * volume_moment
-        return transfer, beta
-
-    _, beta = jax.lax.scan(
-        solve_one_interval,
-        jnp.asarray(0.0, dtype=metric.r.dtype),
-        (shell_volume_error, interval_moment),
-    )
-
-    return beta
-
-
-def _density_conserving_quadratic_stencil(
-    radial_positions,
-    metric,
-    inner_open,
-):
-    """Return raw quadratic weights corrected for spherical shell volume."""
-
-    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
-        radial_positions,
-        metric.r,
-        metric.dr,
-        shape_mode="quadratic",
-    )
-    beta = _density_conserving_quadratic_coefficients(metric, inner_open)
-
-    floating_index = (radial_positions - metric.r[0]) / metric.dr
-    lower_index = jnp.floor(floating_index).astype(jnp.int32)
-    upper_fraction = floating_index - lower_index.astype(metric.r.dtype)
-
-    positive_interval = jnp.logical_and(
-        lower_index >= 0,
-        lower_index < beta.shape[0],
-    )
-    mirrored_interval = jnp.logical_and(
-        lower_index <= -2,
-        -lower_index - 2 < beta.shape[0],
-    )
-    positive_beta_index = jnp.clip(lower_index, 0, beta.shape[0] - 1)
-    mirrored_beta_index = jnp.clip(
-        -lower_index - 2,
-        0,
-        beta.shape[0] - 1,
-    )
-    interval_beta = jnp.where(
-        positive_interval,
-        beta[positive_beta_index],
-        jnp.where(
-            mirrored_interval,
-            -beta[mirrored_beta_index],
-            0.0,
-        ),
-    )
-    transfer = interval_beta * upper_fraction * (1.0 - upper_fraction)
-
-    corrected_weights = raw_weights
-    corrected_weights = corrected_weights + jnp.where(
-        raw_indices == lower_index[jnp.newaxis, :],
-        transfer[jnp.newaxis, :],
-        0.0,
-    )
-    corrected_weights = corrected_weights - jnp.where(
-        raw_indices == lower_index[jnp.newaxis, :] + 1,
-        transfer[jnp.newaxis, :],
-        0.0,
-    )
-
-    return raw_indices, corrected_weights
-
-
-def _radial_particle_deposition_stencil(particles, metric, inner_open):
-    if particles.get_shape() != "quadratic":
-        def open_inner_stencil(_):
-            return _cell_centered_open_inner_shape_stencil(
-                particles.r,
-                metric.r,
-                metric.dr,
-                particles.get_shape(),
-                _inner_areal_radius_index(metric),
-            )
-
-        def parity_origin_stencil(_):
-            indices, even_weights, odd_weights, _ = (
-                _cell_centered_radial_shape_stencil(
-                    particles.r,
-                    metric.r,
-                    metric.dr,
-                    particles.get_shape(),
-                )
-            )
-            return indices, even_weights, odd_weights
-
-        return jax.lax.cond(
-            inner_open,
-            open_inner_stencil,
-            parity_origin_stencil,
-            operand=None,
-        )
-
-    raw_indices, corrected_weights = _density_conserving_quadratic_stencil(
-        particles.r,
-        metric,
-        inner_open,
-    )
-
-    def open_inner_stencil(_):
-        inner_boundary_index = _inner_areal_radius_index(metric)
-        last_grid_index = metric.r.shape[0] - 1
-        physical = jnp.logical_and(
-            raw_indices >= inner_boundary_index,
-            raw_indices <= last_grid_index,
-        )
-        indices = jnp.clip(raw_indices, 0, last_grid_index)
-        physical_weights = jnp.where(physical, corrected_weights, 0.0)
-        return indices, physical_weights, physical_weights
-
-    def parity_origin_stencil(_):
-        reflected_indices = jnp.where(
-            raw_indices < 0,
-            -raw_indices - 1,
-            raw_indices,
-        )
-        valid = reflected_indices < metric.r.shape[0]
-        indices = jnp.clip(reflected_indices, 0, metric.r.shape[0] - 1)
-        even_weights = jnp.where(valid, corrected_weights, 0.0)
-        reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
-        odd_weights = even_weights * reflection_sign
-        return indices, even_weights, odd_weights
-
-    return jax.lax.cond(
-        inner_open,
-        open_inner_stencil,
-        parity_origin_stencil,
-        operand=None,
     )
 
 
@@ -379,7 +101,7 @@ def _radial_matter_deposition_data(particles, metric, inner_open=False):
     )
     particle_mass = particles.get_mass()
 
-    indices, even_weights, odd_weights = _radial_particle_deposition_stencil(
+    indices, even_weights, odd_weights = particle_deposition_stencil(
         particles,
         metric,
         inner_open,
@@ -434,7 +156,7 @@ def compute_radial_matter_terms(
         Stt_numerator,
         Sr_numerator,
     ) = _radial_matter_deposition_data(particles, metric, inner_open)
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
 
     rho = _deposit_radial_particle_quantity(
         indices,
@@ -482,7 +204,7 @@ def relativistic_mass_energy_density(
         indices,
         even_weights,
         rho_numerator,
-        _proper_radial_shell_volume(metric),
+        proper_radial_shell_volume(metric),
     )
 
 
@@ -498,7 +220,7 @@ def compute_radial_momentum_density(
         indices,
         odd_weights,
         Sr_numerator,
-        _proper_radial_shell_volume(metric),
+        proper_radial_shell_volume(metric),
     )
 
 
@@ -514,7 +236,7 @@ def compute_radial_stress_tensor_component(
         indices,
         even_weights,
         Srr_numerator,
-        _proper_radial_shell_volume(metric),
+        proper_radial_shell_volume(metric),
     )
 
 

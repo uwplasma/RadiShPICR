@@ -9,7 +9,7 @@ from RadiShPICR.ConstraintBasedRelativity.utils import (
     radial_shell_volume,
 )
 from RadiShPICR.particles import particle_species
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _cell_centered_open_inner_shape_stencil,
     _interpolate_cell_centered_fields_to_particles,
     interpolate_field_to_particles,

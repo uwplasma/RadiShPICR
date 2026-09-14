@@ -1,17 +1,19 @@
 import jax
 import jax.numpy as jnp
 
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
+    proper_radial_shell_quadrature,
+)
+from RadiShPICR.particles.shape_factors.metric_correct_quadratic import (
+    raw_quadratic_stencil,
+)
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.electric_field import (
     compute_radial_charge_density,
     compute_radial_lorentz_force,
     electric_field_energy,
     solve_radial_electric_field,
-)
-from RadiShPICR.Z4C.energy_momentum_tensor import (
-    _density_conserving_quadratic_stencil,
-    _proper_radial_shell_quadrature,
-    _proper_radial_shell_volume,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -68,7 +70,7 @@ def _particles(metric, shape_mode, ur=None):
 
 def test_charge_deposition_conserves_charge_for_all_particle_shapes():
     metric = _metric()
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
 
     for shape_mode in ("nearest", "linear", "quadratic"):
         particles = _particles(metric, shape_mode)
@@ -105,7 +107,7 @@ def test_nearest_shape_conserves_charge_at_cell_ties_and_respects_origin_parity(
 
     charge_density = compute_radial_charge_density(particles, metric)
     deposited_charge = jnp.sum(
-        charge_density * _proper_radial_shell_volume(metric)
+        charge_density * proper_radial_shell_volume(metric)
     )
     radial_force = compute_radial_lorentz_force(
         particles,
@@ -131,7 +133,7 @@ def test_open_inner_charge_deposition_discards_the_ghost_shape_share():
         uphi=jnp.asarray([0.0]),
         shape_mode="quadratic",
     )
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
 
     parity_density = compute_radial_charge_density(particles, metric)
     open_density = compute_radial_charge_density(particles, metric, True)
@@ -143,7 +145,7 @@ def test_open_inner_charge_deposition_discards_the_ghost_shape_share():
 
     parity_charge = jnp.sum(parity_density * proper_shell_volume)
     open_charge = jnp.sum(open_density * proper_shell_volume)
-    raw_indices, corrected_weights = _density_conserving_quadratic_stencil(
+    raw_indices, corrected_weights = raw_quadratic_stencil(
         particles.r,
         metric,
         True,
@@ -168,7 +170,7 @@ def test_density_conserving_quadratic_charge_is_uniform_at_origin():
         chi=1.0 / (1.0 + 0.02 * metric.r**2),
     )
     expected_charge_density = 0.7
-    quadrature_radius, quadrature_volume = _proper_radial_shell_quadrature(
+    quadrature_radius, quadrature_volume = proper_radial_shell_quadrature(
         metric
     )
     particles = particle_species(
@@ -301,7 +303,7 @@ def test_curved_finite_volume_gauss_residual_is_roundoff():
     )
     face_flux = epsilon_0 * face_area * normal_face_field
 
-    shell_charge = charge_density * _proper_radial_shell_volume(metric)
+    shell_charge = charge_density * proper_radial_shell_volume(metric)
     gauss_residual = jnp.diff(face_flux) - shell_charge
 
     assert jnp.max(jnp.abs(gauss_residual)) < 2.0e-12
@@ -387,7 +389,7 @@ def test_electric_field_energy_uses_physical_inverse_radial_metric():
         chi=0.8,
     )
     E_r = 0.1 + 0.05 * metric.r
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
     epsilon_0 = 1.6
     expected_energy = jnp.sum(
         0.5

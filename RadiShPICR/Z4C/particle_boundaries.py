@@ -1,18 +1,14 @@
 import jax.numpy as jnp
 
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.common import (
+    inner_areal_radius_index,
+)
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _cell_centered_open_inner_shape_stencil,
 )
 
 
 INNER_AREAL_GHOST_CELLS = 2
-
-
-def _inner_areal_radius_index(metric):
-    grid_areal_radius = metric.r * jnp.sqrt(
-        metric.conformal_gt / metric.chi
-    )
-    return jnp.argmin(grid_areal_radius)
 
 
 def _delete_particles(particles, delete):
@@ -45,7 +41,7 @@ def deleting_particle_boundary(particles, metric=None):
 def deleting_inner_areal_radius_boundary(particles, metric):
     """Irreversibly absorb particles whose inner-open shape has left the grid."""
 
-    inner_boundary_index = _inner_areal_radius_index(metric)
+    inner_boundary_index = inner_areal_radius_index(metric)
     _, physical_weights, _ = _cell_centered_open_inner_shape_stencil(
         particles.r,
         metric.r,
