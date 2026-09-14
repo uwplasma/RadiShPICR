@@ -10,6 +10,7 @@ from RadiShPICR.ConstraintBasedRelativity.utils import (
 )
 from RadiShPICR.particles import particle_species
 from RadiShPICR.particles.particle_shapes import (
+    _cell_centered_open_inner_shape_stencil,
     _interpolate_cell_centered_fields_to_particles,
     interpolate_field_to_particles,
     interpolate_fields_to_particles,
@@ -368,6 +369,60 @@ def test_cell_centered_interpolation_preserves_non_origin_gather():
         )
 
         assert jnp.allclose(actual, expected)
+
+
+def test_open_inner_quadratic_shape_loses_physical_overlap_without_renormalizing():
+    radial_grid = 0.5 + jnp.arange(6.0)
+    radial_positions = jnp.asarray(
+        [1.0, 0.75, 0.5, 0.25, 0.0, -0.25, -0.5, -0.75, -1.0]
+    )
+
+    indices, even_weights, odd_weights = (
+        _cell_centered_open_inner_shape_stencil(
+            radial_positions,
+            radial_grid,
+            dr=1.0,
+            shape_mode="quadratic",
+            inner_boundary_index=jnp.asarray(0),
+        )
+    )
+    physical_overlap = jnp.sum(even_weights, axis=0)
+
+    assert indices.shape == even_weights.shape
+    assert jnp.allclose(odd_weights, even_weights)
+    assert jnp.allclose(
+        physical_overlap,
+        jnp.asarray(
+            [1.0, 0.96875, 0.875, 0.71875, 0.5, 0.28125, 0.125, 0.03125, 0.0]
+        ),
+    )
+    assert jnp.all(jnp.diff(physical_overlap) <= 0.0)
+
+
+def test_open_inner_shape_tracks_a_nonzero_boundary_index():
+    radial_grid = 0.5 + jnp.arange(6.0)
+    radial_positions = jnp.asarray([1.5, 2.0, 2.5, 3.0])
+
+    indices, weights, _ = _cell_centered_open_inner_shape_stencil(
+        radial_positions,
+        radial_grid,
+        dr=1.0,
+        shape_mode="quadratic",
+        inner_boundary_index=jnp.asarray(2),
+    )
+
+    particle_columns = jnp.broadcast_to(
+        jnp.arange(radial_positions.size)[jnp.newaxis, :],
+        indices.shape,
+    )
+    deposited = jnp.zeros((radial_grid.size, radial_positions.size))
+    deposited = deposited.at[indices, particle_columns].add(weights)
+
+    assert jnp.allclose(deposited[:2], 0.0)
+    assert jnp.allclose(
+        jnp.sum(deposited, axis=0),
+        jnp.asarray([0.125, 0.5, 0.875, 1.0]),
+    )
 
 
 def test_unbounded_compact_stencil_matches_pointwise_shape_weights():

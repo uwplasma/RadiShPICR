@@ -41,7 +41,10 @@ from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 from RadiShPICR.Z4C.geodesic import _radial_grid_from_metric
-from RadiShPICR.Z4C.particle_boundaries import deleting_particle_boundary
+from RadiShPICR.Z4C.particle_boundaries import (
+    INNER_AREAL_GHOST_CELLS,
+    deleting_inner_areal_radius_boundary,
+)
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
@@ -60,7 +63,7 @@ rk4_step_jit = jax.jit(
 
 TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
-TARGET_SCHWARZSCHILD_TIME = 100 * TOTAL_STAR_MASS
+TARGET_SCHWARZSCHILD_TIME = 500 * TOTAL_STAR_MASS
 
 # The constrained demo uses 500 points over 20M.  Extending that spacing to
 # 100M gives 2495 Z4c cells and 2496 constrained-solve nodes.
@@ -76,6 +79,13 @@ FREE_FALL_FRACTION = 0.05
 MINIMUM_TRIAL_TIME_STEP = 1.0e-7
 SAVE_EVERY = 10
 SHOOTING_ITERATIONS = 2
+INNER_PARTICLE_DEPOSITION = "unrenormalized_shape_overlap"
+PARTICLE_DEPOSITION_SCHEME = (
+    "ruyten_density_conserving_quadratic_nonnegative"
+)
+INNER_PARTICLE_ABSORPTION = (
+    "zero_physical_overlap_or_beyond_two_ghost_edge"
+)
 
 KAPPA = 0.02
 ETA = 2.0
@@ -575,7 +585,11 @@ def state_is_acceptable(metric, particles):
 
 
 def freefall_collapse_time_step(particles, metric):
-    matter_terms = compute_radial_matter_terms_jit(particles, metric)
+    matter_terms = compute_radial_matter_terms_jit(
+        particles,
+        metric,
+        True,
+    )
     rho_max = float(np.max(np.asarray(matter_terms.rho)))
     if rho_max <= 0.0:
         return math.inf
@@ -622,6 +636,7 @@ def write_schwarzschild_snapshot(
     matter_terms = compute_radial_matter_terms_jit(
         diagnostic_particles,
         diagnostic_metric,
+        True,
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
     areal_radius = diagnostic_metric.r * jnp.sqrt(gT)
@@ -717,6 +732,7 @@ def run_simulation(args):
     )
 
     total_effective_mass = float(np.sum(np.asarray(particles.get_mass())))
+    initial_particle_weight = float(np.sum(np.asarray(particles.weight)))
     initial_grr, initial_gT = physical_spatial_metric(metric)
     initial_isotropy_error = float(
         np.max(np.abs(np.asarray(initial_grr - initial_gT)))
@@ -749,7 +765,12 @@ def run_simulation(args):
         constrained_outer_X_t=float(initial_X_t),
         target_schwarzschild_time=float(args.target_time),
         particle_state_variables="r_ur",
-        particle_boundary="deleting",
+        particle_boundary="areal_inner_open",
+        particle_inner_ghost_cells=INNER_AREAL_GHOST_CELLS,
+        particle_deposition_boundary=INNER_PARTICLE_DEPOSITION,
+        particle_deposition_scheme=PARTICLE_DEPOSITION_SCHEME,
+        particle_absorption_rule=INNER_PARTICLE_ABSORPTION,
+        shape_mode=args.shape_mode,
     )
 
     step = 0
@@ -798,7 +819,7 @@ def run_simulation(args):
                     trial_dt,
                     EM_on=False,
                     GR_on=True,
-                    particle_boundary=deleting_particle_boundary,
+                    particle_boundary=deleting_inner_areal_radius_boundary,
                 )
 
                 if not state_is_acceptable(trial_metric, trial_particles):
@@ -894,8 +915,16 @@ def run_simulation(args):
         TOTAL_STAR_MASS,
     )
     completed = args.target_time - schwarzschild_time <= time_tolerance
+    final_active_particle_weight = float(
+        np.sum(np.asarray(particles.weight))
+    )
     run_summary = {
-        "particle_boundary": "deleting",
+        "particle_boundary": "areal_inner_open",
+        "particle_inner_ghost_cells": INNER_AREAL_GHOST_CELLS,
+        "particle_deposition_boundary": INNER_PARTICLE_DEPOSITION,
+        "particle_deposition_scheme": PARTICLE_DEPOSITION_SCHEME,
+        "particle_absorption_rule": INNER_PARTICLE_ABSORPTION,
+        "shape_mode": args.shape_mode,
         "completed": bool(completed),
         "final_step": int(step),
         "final_schwarzschild_time": float(schwarzschild_time),
@@ -905,6 +934,11 @@ def run_simulation(args):
         "maximum_chi": float(np.max(np.asarray(diagnostic_metric.chi))),
         "active_particles": int(np.count_nonzero(np.asarray(particles.weight))),
         "total_particles": int(particles.r.size),
+        "initial_particle_weight": initial_particle_weight,
+        "final_active_particle_weight": final_active_particle_weight,
+        "deleted_particle_weight": (
+            initial_particle_weight - final_active_particle_weight
+        ),
         "wall_runtime_seconds": float(time.perf_counter() - wall_start),
     }
     with (Path(args.output_directory) / "run_summary.json").open("w") as stream:
@@ -919,7 +953,10 @@ def parse_arguments():
     output_directory = (
         Path(__file__).resolve().parent
         / "outputs"
-        / "z4c_oppenheimer_snyder_deleting"
+        / (
+            "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
+            "_nonnegative_density_conserving_tsc"
+        )
     )
 
     parser = argparse.ArgumentParser()
@@ -933,7 +970,7 @@ def parse_arguments():
     parser.add_argument(
         "--shape-mode",
         choices=("nearest", "linear", "quadratic"),
-        default="nearest",
+        default="quadratic",
     )
     parser.add_argument(
         "--target-time",

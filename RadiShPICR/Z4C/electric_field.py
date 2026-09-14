@@ -6,24 +6,29 @@ from RadiShPICR.particles.particle_shapes import (
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
     _proper_radial_shell_volume,
+    _radial_particle_deposition_stencil,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
-def compute_radial_charge_density(particles, metric: Z4C_Metric):
+def compute_radial_charge_density(
+    particles,
+    metric: Z4C_Metric,
+    inner_open=False,
+):
     """Deposit Eulerian charge density on the cell-centered radial grid.
 
-    The existing compact stencil discards support beyond the outer grid.  A
-    caller that requires exact charge conservation must therefore keep every
-    particle's complete shape support inside the radial domain.
+    The compact stencil discards support beyond the outer grid.  With
+    ``inner_open=True`` it also discards, without renormalization, support
+    below the instantaneous areal-radius minimum.  Exact charge conservation
+    therefore requires every particle's complete shape support to remain in
+    the radial domain.
     """
 
-    radial_positions, _ = particles.get_positions()
-    indices, even_weights, _, _ = _cell_centered_radial_shape_stencil(
-        radial_positions,
-        metric.r,
-        metric.dr,
-        particles.get_shape(),
+    indices, even_weights, _ = _radial_particle_deposition_stencil(
+        particles,
+        metric,
+        inner_open,
     )
 
     deposited_charge = jnp.zeros_like(metric.r).at[indices].add(

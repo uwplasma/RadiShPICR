@@ -24,15 +24,28 @@ Features:
   stress-energy for dynamical spacetimes.
 - Explicit metric-only Z4C RK4 evolution for vacuum and prescribed-source
   calculations without particle deposition.
+- Selectable standard Sommerfeld and nonlinear constraint-preserving outer
+  boundaries for spherical Z4C evolution; Sommerfeld remains the default.
 
 Demos:
 - [ ] Single puncture black hole in Z4C.
 - [ ] Oppenheimer-Snyder collapse in constraint-based relativity.
 - [ ] Charged stellar collapse in constraint-based relativity.
-- [X] Relativistic two-stream instability from flat Z4C initial data, with
-  fixed-Minkowski and dynamical-GR modes, source-aware Misner--Sharp and
-  Kretschmann diagnostics, synchronized metric movies, and signed energy
-  composition plots.
+- [X] Relativistic two-stream instability with fixed-background and dynamical
+  Z4C evolution from the same time-symmetric Hamiltonian-constraint solve,
+  source-aware Misner--Sharp diagnostics, synchronized metric movies, and
+  signed energy composition plots.
+
+The two-stream demo initializes two neutral electron-ion streams at opposite
+local velocities.  Co-moving ions suppress the unperturbed charge separation
+at the annulus edges; a small electron-only displacement seeds the instability.
+Ion rest mass and charge are unchanged, but their streaming kinetic energy and
+radial stress enter the initial constraint solve and subsequent evolution.
+Both gravity modes solve the same initial metric; `--no-dynamic-gr` holds that
+metric fixed.  The local homogeneous growth benchmark includes both electron
+and ion susceptibility.  Nonlinear evolution can still generate edge structure.
+New runs and the diagnostic renderer default to
+`demos/relativistic_two_stream/outputs/z4c_two_stream_neutral_streams`.
 
 STILL UNDER DEVELOPMENT.  The code is not yet ready for production use.
 

@@ -1,6 +1,11 @@
 import jax
 import jax.numpy as jnp
 
+from RadiShPICR.Z4C.boundary_conditions import (
+    METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
+    METRIC_BOUNDARY_SOMMERFELD,
+    apply_constraint_preserving_boundary,
+)
 from RadiShPICR.Z4C.constraint_terms import dGammadt, dthetadt
 from RadiShPICR.Z4C.extrinsic_curvature import dArrdt, dAtdt, dKhdt
 from RadiShPICR.Z4C.shift_and_lapse import dalphadt, dbetadt
@@ -18,32 +23,57 @@ from RadiShPICR.Z4C.electric_field import (
     solve_radial_electric_field,
 )
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
+from RadiShPICR.Z4C.particle_boundaries import (
+    deleting_inner_areal_radius_boundary,
+)
 from RadiShPICR.Z4C.utils import (
     trace_free_curvature,
     unit_determinant_conformal_metric,
 )
 
 
-def metric_time_derivatives(metric: Z4C_Metric, matter_terms):
+def metric_time_derivatives(
+    metric: Z4C_Metric,
+    matter_terms,
+    metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+):
     zeros = jnp.zeros_like(metric.r)
     zero_dr = jnp.zeros_like(metric.dr)
+    apply_sommerfeld_boundary = (
+        metric_boundary != METRIC_BOUNDARY_CONSTRAINT_PRESERVING
+    )
 
-    return Z4C_Metric(
-        alpha=dalphadt(metric, matter_terms),
-        beta=dbetadt(metric, matter_terms),
-        conformal_grr=dgrrdt(metric, matter_terms),
-        conformal_gt=dgtdt(metric, matter_terms),
-        chi=dchidt(metric, matter_terms),
-        Kh=dKhdt(metric, matter_terms),
-        Arr=dArrdt(metric, matter_terms),
-        At=dAtdt(metric, matter_terms),
-        theta=dthetadt(metric, matter_terms),
-        Gamma=dGammadt(metric, matter_terms),
+    derivatives = Z4C_Metric(
+        alpha=dalphadt(metric, matter_terms, apply_sommerfeld_boundary),
+        beta=dbetadt(metric, matter_terms, apply_sommerfeld_boundary),
+        conformal_grr=dgrrdt(
+            metric,
+            matter_terms,
+            apply_sommerfeld_boundary,
+        ),
+        conformal_gt=dgtdt(
+            metric,
+            matter_terms,
+            apply_sommerfeld_boundary,
+        ),
+        chi=dchidt(metric, matter_terms, apply_sommerfeld_boundary),
+        Kh=dKhdt(metric, matter_terms, apply_sommerfeld_boundary),
+        Arr=dArrdt(metric, matter_terms, apply_sommerfeld_boundary),
+        At=dAtdt(metric, matter_terms, apply_sommerfeld_boundary),
+        theta=dthetadt(metric, matter_terms, apply_sommerfeld_boundary),
+        Gamma=dGammadt(metric, matter_terms, apply_sommerfeld_boundary),
         kappa=jnp.zeros_like(metric.kappa),
         eta=jnp.zeros_like(metric.eta),
         nu=jnp.zeros_like(metric.nu),
         r=zeros,
         dr=zero_dr,
+    )
+
+    return jax.lax.cond(
+        metric_boundary == METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
+        lambda rhs: apply_constraint_preserving_boundary(metric, rhs),
+        lambda rhs: rhs,
+        derivatives,
     )
 
 
@@ -122,22 +152,27 @@ def _combine_rk4_derivatives(k1, k2, k3, k4):
     )
 
 
-def metric_rk4_step(metric: Z4C_Metric, matter_terms, dt):
+def metric_rk4_step(
+    metric: Z4C_Metric,
+    matter_terms,
+    dt,
+    metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+):
     """Advance the Z4C metric with fixed matter terms using classic RK4."""
 
     metric = _enforce_algebraic_constraints(metric)
     # Every RK right-hand side is evaluated from a constraint-projected metric.
 
-    k1 = metric_time_derivatives(metric, matter_terms)
+    k1 = metric_time_derivatives(metric, matter_terms, metric_boundary)
 
     metric_k2 = _add_metric_derivative(metric, k1, 0.5 * dt)
-    k2 = metric_time_derivatives(metric_k2, matter_terms)
+    k2 = metric_time_derivatives(metric_k2, matter_terms, metric_boundary)
 
     metric_k3 = _add_metric_derivative(metric, k2, 0.5 * dt)
-    k3 = metric_time_derivatives(metric_k3, matter_terms)
+    k3 = metric_time_derivatives(metric_k3, matter_terms, metric_boundary)
 
     metric_k4 = _add_metric_derivative(metric, k3, dt)
-    k4 = metric_time_derivatives(metric_k4, matter_terms)
+    k4 = metric_time_derivatives(metric_k4, matter_terms, metric_boundary)
 
     weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
 
@@ -194,9 +229,22 @@ def _add_matter_terms(particle_matter, field_matter):
     )
 
 
-def _electrostatic_stage_state(particles, metric, epsilon_0, EM_on):
+def _electrostatic_stage_state(
+    particles,
+    metric,
+    epsilon_0,
+    EM_on,
+    inner_open,
+):
     def electrostatic_state(_):
-        charge_density = compute_radial_charge_density(particles, metric)
+        if inner_open:
+            charge_density = compute_radial_charge_density(
+                particles,
+                metric,
+                True,
+            )
+        else:
+            charge_density = compute_radial_charge_density(particles, metric)
         E_r = solve_radial_electric_field(
             metric,
             charge_density,
@@ -226,12 +274,21 @@ def _electrostatic_stage_state(particles, metric, epsilon_0, EM_on):
     )
 
 
-def _stage_derivatives(particles, metric, epsilon_0, EM_on, GR_on):
+def _stage_derivatives(
+    particles,
+    metric,
+    epsilon_0,
+    EM_on,
+    GR_on,
+    metric_boundary,
+    inner_open,
+):
     _, _, lorentz_force, field_matter = _electrostatic_stage_state(
         particles,
         metric,
         epsilon_0,
         EM_on,
+        inner_open,
     )
     du_r_dt, du_phi_dt, dr_dt, dphi_dt = compute_geodesic_terms(
         particles,
@@ -240,9 +297,16 @@ def _stage_derivatives(particles, metric, epsilon_0, EM_on, GR_on):
     du_r_dt = du_r_dt + lorentz_force
 
     def dynamical_metric_derivative(_):
-        particle_matter = compute_radial_matter_terms(particles, metric)
+        if inner_open:
+            particle_matter = compute_radial_matter_terms(
+                particles,
+                metric,
+                True,
+            )
+        else:
+            particle_matter = compute_radial_matter_terms(particles, metric)
         matter_terms = _add_matter_terms(particle_matter, field_matter)
-        return metric_time_derivatives(metric, matter_terms)
+        return metric_time_derivatives(metric, matter_terms, metric_boundary)
 
     metric_derivative = jax.lax.cond(
         GR_on,
@@ -263,9 +327,22 @@ def _metric_stage(metric, derivative, scale, GR_on):
     )
 
 
-def _final_electrostatic_fields(particles, metric, epsilon_0, EM_on):
+def _final_electrostatic_fields(
+    particles,
+    metric,
+    epsilon_0,
+    EM_on,
+    inner_open,
+):
     def electrostatic_fields(_):
-        charge_density = compute_radial_charge_density(particles, metric)
+        if inner_open:
+            charge_density = compute_radial_charge_density(
+                particles,
+                metric,
+                True,
+            )
+        else:
+            charge_density = compute_radial_charge_density(particles, metric)
         E_r = solve_radial_electric_field(
             metric,
             charge_density,
@@ -294,6 +371,7 @@ def rk4_step(
     GR_on,
     epsilon_0=1.0,
     particle_boundary=None,
+    metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
 ):
     """Advance particles, electrostatics, and Z4C with one RK4 tableau.
 
@@ -301,6 +379,8 @@ def rk4_step(
     gravitational sources are recomputed from matching particle and metric
     states at every RK stage.  With ``GR_on=False`` the supplied metric is
     used as a static background without algebraic projection.
+    ``particle_boundary`` receives ``(stage_particles, stage_metric)`` before
+    each stage derivative and once more after the final update.
     """
 
     metric = jax.lax.cond(
@@ -309,10 +389,22 @@ def rk4_step(
         lambda static_metric: static_metric,
         metric,
     )
+    if particle_boundary is not None:
+        particles = particle_boundary(particles, metric)
+    inner_open = particle_boundary is deleting_inner_areal_radius_boundary
+
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()
 
-    k1 = _stage_derivatives(particles, metric, epsilon_0, EM_on, GR_on)
+    k1 = _stage_derivatives(
+        particles,
+        metric,
+        epsilon_0,
+        EM_on,
+        GR_on,
+        metric_boundary,
+        inner_open,
+    )
     k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt = k1
 
     metric_k2 = _metric_stage(metric, k1_metric, 0.5 * dt, GR_on)
@@ -324,8 +416,16 @@ def rk4_step(
         uphi0 + 0.5 * dt * k1_du_phi_dt,
     )
     if particle_boundary is not None:
-        particles_k2 = particle_boundary(particles_k2)
-    k2 = _stage_derivatives(particles_k2, metric_k2, epsilon_0, EM_on, GR_on)
+        particles_k2 = particle_boundary(particles_k2, metric_k2)
+    k2 = _stage_derivatives(
+        particles_k2,
+        metric_k2,
+        epsilon_0,
+        EM_on,
+        GR_on,
+        metric_boundary,
+        inner_open,
+    )
     k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt = k2
 
     metric_k3 = _metric_stage(metric, k2_metric, 0.5 * dt, GR_on)
@@ -338,8 +438,16 @@ def rk4_step(
         weight=particles_k2.weight,
     )
     if particle_boundary is not None:
-        particles_k3 = particle_boundary(particles_k3)
-    k3 = _stage_derivatives(particles_k3, metric_k3, epsilon_0, EM_on, GR_on)
+        particles_k3 = particle_boundary(particles_k3, metric_k3)
+    k3 = _stage_derivatives(
+        particles_k3,
+        metric_k3,
+        epsilon_0,
+        EM_on,
+        GR_on,
+        metric_boundary,
+        inner_open,
+    )
     k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt = k3
 
     metric_k4 = _metric_stage(metric, k3_metric, dt, GR_on)
@@ -352,8 +460,16 @@ def rk4_step(
         weight=particles_k3.weight,
     )
     if particle_boundary is not None:
-        particles_k4 = particle_boundary(particles_k4)
-    k4 = _stage_derivatives(particles_k4, metric_k4, epsilon_0, EM_on, GR_on)
+        particles_k4 = particle_boundary(particles_k4, metric_k4)
+    k4 = _stage_derivatives(
+        particles_k4,
+        metric_k4,
+        epsilon_0,
+        EM_on,
+        GR_on,
+        metric_boundary,
+        inner_open,
+    )
     k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt = k4
 
     weighted_metric_derivative = _combine_rk4_derivatives(
@@ -395,19 +511,25 @@ def rk4_step(
         weight=particles_k4.weight,
     )
     if particle_boundary is not None:
-        final_particles = particle_boundary(final_particles)
+        final_particles = particle_boundary(final_particles, final_metric)
 
     charge_density, E_r = _final_electrostatic_fields(
         final_particles,
         final_metric,
         epsilon_0,
         EM_on,
+        inner_open,
     )
 
     return final_particles, final_metric, charge_density, E_r
 
 
-def advance_vacuum_steps(metric: Z4C_Metric, dt, num_steps):
+def advance_vacuum_steps(
+    metric: Z4C_Metric,
+    dt,
+    num_steps,
+    metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
+):
     """Advance several exact-vacuum Z4C steps in one compiled scan."""
 
     def advance_one_step(carry, local_step):
@@ -417,6 +539,7 @@ def advance_vacuum_steps(metric: Z4C_Metric, dt, num_steps):
             metric,
             matter_terms,
             dt,
+            metric_boundary,
         )
         finite = _metric_fields_finite(metric)
         first_nonfinite_step = jnp.where(

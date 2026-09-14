@@ -8,7 +8,11 @@ from RadiShPICR.Z4C.electric_field import (
     electric_field_energy,
     solve_radial_electric_field,
 )
-from RadiShPICR.Z4C.energy_momentum_tensor import _proper_radial_shell_volume
+from RadiShPICR.Z4C.energy_momentum_tensor import (
+    _density_conserving_quadratic_stencil,
+    _proper_radial_shell_quadrature,
+    _proper_radial_shell_volume,
+)
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -112,6 +116,92 @@ def test_nearest_shape_conserves_charge_at_cell_ties_and_respects_origin_parity(
     assert jnp.allclose(deposited_charge, jnp.sum(particles.get_charge()))
     assert radial_force[0] == 0.0
     assert radial_force[1] == particles.charges[1] / particles.masses[1]
+
+
+def test_open_inner_charge_deposition_discards_the_ghost_shape_share():
+    metric = _metric(num_cells=8, dr=1.0)
+    particles = particle_species(
+        name="open-inner",
+        charge=2.0,
+        mass=1.0,
+        weight=0.4,
+        r=jnp.asarray([0.0]),
+        ur=jnp.asarray([0.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="quadratic",
+    )
+    proper_shell_volume = _proper_radial_shell_volume(metric)
+
+    parity_density = compute_radial_charge_density(particles, metric)
+    open_density = compute_radial_charge_density(particles, metric, True)
+    compiled_open_density = jax.jit(compute_radial_charge_density)(
+        particles,
+        metric,
+        True,
+    )
+
+    parity_charge = jnp.sum(parity_density * proper_shell_volume)
+    open_charge = jnp.sum(open_density * proper_shell_volume)
+    raw_indices, corrected_weights = _density_conserving_quadratic_stencil(
+        particles.r,
+        metric,
+        True,
+    )
+    retained_overlap = jnp.sum(
+        jnp.where(raw_indices >= 0, corrected_weights, 0.0)
+    )
+
+    assert jnp.allclose(parity_charge, jnp.sum(particles.get_charge()))
+    assert jnp.allclose(
+        open_charge,
+        retained_overlap * particles.get_charge()[0],
+    )
+    assert jnp.allclose(compiled_open_density, open_density)
+
+
+def test_density_conserving_quadratic_charge_is_uniform_at_origin():
+    metric = _metric(num_cells=32, dr=0.2)
+    metric = metric._replace(
+        conformal_grr=1.0 + 0.04 * metric.r**2,
+        conformal_gt=1.0 + 0.03 * metric.r,
+        chi=1.0 / (1.0 + 0.02 * metric.r**2),
+    )
+    expected_charge_density = 0.7
+    quadrature_radius, quadrature_volume = _proper_radial_shell_quadrature(
+        metric
+    )
+    particles = particle_species(
+        name="proper-volume charge quiet start",
+        charge=1.0,
+        mass=1.0,
+        weight=expected_charge_density * quadrature_volume,
+        r=quadrature_radius,
+        ur=jnp.zeros_like(quadrature_radius),
+        phi=jnp.zeros_like(quadrature_radius),
+        uphi=jnp.zeros_like(quadrature_radius),
+        shape_mode="quadratic",
+    )
+
+    for inner_open in (False, True):
+        charge_density = compute_radial_charge_density(
+            particles,
+            metric,
+            inner_open,
+        )
+        compiled_charge_density = jax.jit(compute_radial_charge_density)(
+            particles,
+            metric,
+            inner_open,
+        )
+
+        assert jnp.allclose(
+            charge_density[:12],
+            expected_charge_density,
+            rtol=2.0e-13,
+            atol=2.0e-13,
+        )
+        assert jnp.allclose(compiled_charge_density, charge_density)
 
 
 def test_charge_density_is_independent_of_particle_momentum():

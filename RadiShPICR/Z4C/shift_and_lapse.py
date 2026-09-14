@@ -2,7 +2,7 @@ import jax.numpy as jnp
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative, sixth_derivative
 
-def dalphadt(metric: Z4C_Metric, matter_terms):
+def dalphadt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     alpha = metric.alpha
     grr   = metric.conformal_grr
     beta = metric.beta
@@ -28,13 +28,22 @@ def dalphadt(metric: Z4C_Metric, matter_terms):
     lapse_speed = -beta[-1] + jnp.sqrt(2 * alpha[-1] ) / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dalphadt = dalphadt.at[-1].set(  - lapse_speed * (  dalphadr[-1]    +   (alpha[-1] - 1) / metric.r[-1] )  )
+    sommerfeld_boundary = -lapse_speed * (
+        dalphadr[-1] + (alpha[-1] - 1) / metric.r[-1]
+    )
+    dalphadt = dalphadt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dalphadt[-1],
+        )
+    )
     # set the time derivative of alpha at the outer boundary using the Sommerfeld boundary condition
 
     return dalphadt
 
 
-def dbetadt(metric: Z4C_Metric, matter_terms):
+def dbetadt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     beta = metric.beta
     Gamma = metric.Gamma
     nu = metric.nu
@@ -60,7 +69,16 @@ def dbetadt(metric: Z4C_Metric, matter_terms):
     shift_speed = -beta[-1] * jnp.sqrt(5/2)
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dbetadt = dbetadt.at[-1].set(  - shift_speed * (  dbetadr[-1]    +   beta[-1] / metric.r[-1] )  )
+    sommerfeld_boundary = -shift_speed * (
+        dbetadr[-1] + beta[-1] / metric.r[-1]
+    )
+    dbetadt = dbetadt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dbetadt[-1],
+        )
+    )
     # set the time derivative of beta at the outer boundary using the Sommerfeld boundary condition
 
 

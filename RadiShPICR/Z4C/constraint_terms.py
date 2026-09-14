@@ -6,7 +6,7 @@ CHI_FLOOR_VALUE = 1e-12
 
 
 
-def dthetadt(metric: Z4C_Metric, matter_terms):
+def dthetadt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     
     Arr = metric.Arr
     At = metric.At
@@ -96,7 +96,16 @@ def dthetadt(metric: Z4C_Metric, matter_terms):
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dthetadt = dthetadt.at[-1].set(  - speed_of_light * (  dthetadr[-1]    +   theta[-1] / metric.r[-1] )  )
+    sommerfeld_boundary = -speed_of_light * (
+        dthetadr[-1] + theta[-1] / metric.r[-1]
+    )
+    dthetadt = dthetadt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dthetadt[-1],
+        )
+    )
     # set the time derivative of theta at the outer boundary using the Sommerfeld boundary condition
     
 
@@ -104,7 +113,7 @@ def dthetadt(metric: Z4C_Metric, matter_terms):
     return dthetadt
 
 
-def dGammadt(metric: Z4C_Metric, matter_terms):
+def dGammadt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     Arr = metric.Arr
     At = metric.At
     alpha = metric.alpha
@@ -177,7 +186,16 @@ def dGammadt(metric: Z4C_Metric, matter_terms):
     shift_speed = -beta[-1] * jnp.sqrt(5/2)
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dGammadt = dGammadt.at[-1].set(  - shift_speed * (  dGammadr[-1]    +   Gamma[-1] / metric.r[-1] )  )
+    sommerfeld_boundary = -shift_speed * (
+        dGammadr[-1] + Gamma[-1] / metric.r[-1]
+    )
+    dGammadt = dGammadt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dGammadt[-1],
+        )
+    )
     # set the time derivative of Gamma at the outer boundary using the Sommerfeld boundary condition
 
     return dGammadt

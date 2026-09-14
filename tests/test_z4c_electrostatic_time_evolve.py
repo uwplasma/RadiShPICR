@@ -185,7 +185,7 @@ def test_em_and_gr_add_field_stress_energy_at_matching_rk_stages(monkeypatch):
         zeros = jnp.zeros_like(stage_particles.r)
         return zeros, zeros, zeros, zeros
 
-    def derivative_from_energy(stage_metric, matter_terms):
+    def derivative_from_energy(stage_metric, matter_terms, metric_boundary=0):
         zeros = jnp.zeros_like(stage_metric.r)
         return Z4C_Metric(
             alpha=matter_terms.rho,

@@ -3,7 +3,7 @@ from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative, sixth_derivative
 
 
-def dchidt(metric: Z4C_Metric, matter_terms):
+def dchidt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     alpha = metric.alpha
     beta = metric.beta
     chi = metric.chi
@@ -41,13 +41,22 @@ def dchidt(metric: Z4C_Metric, matter_terms):
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dchidt = dchidt.at[-1].set(  - speed_of_light * (  dchidr[-1]    +   (chi[-1] - 1) / metric.r[-1] )  )
+    sommerfeld_boundary = -speed_of_light * (
+        dchidr[-1] + (chi[-1] - 1) / metric.r[-1]
+    )
+    dchidt = dchidt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dchidt[-1],
+        )
+    )
     # set the time derivative of chi at the outer boundary using the Sommerfeld boundary condition
 
     return dchidt
 
 
-def dgrrdt(metric: Z4C_Metric, matter_terms):
+def dgrrdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     alpha = metric.alpha
     beta = metric.beta
     Arr  = metric.Arr
@@ -77,13 +86,22 @@ def dgrrdt(metric: Z4C_Metric, matter_terms):
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dgrrdt = dgrrdt.at[-1].set(  - speed_of_light * (  dgrrdr[-1]    +   (grr[-1] - 1) / metric.r[-1] )  )
+    sommerfeld_boundary = -speed_of_light * (
+        dgrrdr[-1] + (grr[-1] - 1) / metric.r[-1]
+    )
+    dgrrdt = dgrrdt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dgrrdt[-1],
+        )
+    )
     # set the time derivative of grr at the outer boundary using the Sommerfeld boundary condition
 
 
     return dgrrdt
 
-def dgtdt(metric: Z4C_Metric, matter_terms):
+def dgtdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     alpha = metric.alpha
     beta = metric.beta
     At   = metric.At
@@ -115,7 +133,16 @@ def dgtdt(metric: Z4C_Metric, matter_terms):
     speed_of_light = -beta[-1] + alpha[-1] / jnp.sqrt(grr[-1])
     # compute the speed of light at the outer boundary using the lapse and shift
 
-    dgtdt = dgtdt.at[-1].set(  - speed_of_light * (  dgtdr[-1]    +   (gt[-1] - 1) / metric.r[-1] )  )
+    sommerfeld_boundary = -speed_of_light * (
+        dgtdr[-1] + (gt[-1] - 1) / metric.r[-1]
+    )
+    dgtdt = dgtdt.at[-1].set(
+        jnp.where(
+            apply_sommerfeld_boundary,
+            sommerfeld_boundary,
+            dgtdt[-1],
+        )
+    )
     # set the time derivative of gt at the outer boundary using the Sommerfeld boundary condition
 
     return dgtdt

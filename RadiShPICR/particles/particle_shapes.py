@@ -189,6 +189,39 @@ def _cell_centered_radial_shape_stencil(
     return indices, even_weights, odd_weights, origin_stencil
 
 
+def _cell_centered_open_inner_shape_stencil(
+    radial_positions,
+    radial_grid,
+    dr,
+    shape_mode,
+    inner_boundary_index,
+):
+    """Return the physical share of shapes crossing an open inner boundary.
+
+    Raw compact weights below ``inner_boundary_index`` belong to the logical
+    inner ghost cells.  They are neither reflected nor renormalized onto the
+    physical grid, so a particle's deposited source decreases continuously as
+    its finite-width shape leaves the domain.
+    """
+
+    raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
+        radial_positions,
+        radial_grid,
+        dr,
+        shape_mode=shape_mode,
+    )
+
+    last_grid_index = radial_grid.shape[0] - 1
+    physical = jnp.logical_and(
+        raw_indices >= inner_boundary_index,
+        raw_indices <= last_grid_index,
+    )
+    indices = jnp.clip(raw_indices, 0, last_grid_index)
+    physical_weights = jnp.where(physical, raw_weights, 0.0)
+
+    return indices, physical_weights, physical_weights
+
+
 @partial(jax.jit, static_argnames=("shape_mode",))
 def unbounded_radial_shape_stencil(
     radial_positions,

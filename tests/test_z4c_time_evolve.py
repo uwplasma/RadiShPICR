@@ -5,6 +5,7 @@ from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.energy_momentum_tensor import MatterTerms
 from RadiShPICR.Z4C.energy_momentum_tensor import initialize_vacuum_matter_terms
 from RadiShPICR.Z4C.particle_boundaries import (
+    deleting_inner_areal_radius_boundary,
     deleting_particle_boundary,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
@@ -178,7 +179,11 @@ def test_metric_rk4_step_uses_fixed_matter_and_classic_stage_weights(monkeypatch
     stage_values = [1.0, 2.0, 3.0, 4.0]
     stage_matter_terms = []
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter,
+        metric_boundary=0,
+    ):
         stage_matter_terms.append(stage_matter)
         stage_value = stage_values.pop(0)
         return _metric_derivative(stage_metric, alpha_value=stage_value)
@@ -213,7 +218,11 @@ def test_metric_rk4_step_projects_every_metric_stage(monkeypatch):
     matter_terms = initialize_vacuum_matter_terms(metric)
     stage_metrics = []
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         stage_metrics.append(stage_metric)
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
         return derivative._replace(
@@ -356,7 +365,11 @@ def test_rk4_step_projects_every_metric_stage(monkeypatch):
     particles = _empty_particles()
     stage_metrics = []
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         stage_metrics.append(stage_metric)
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
 
@@ -396,7 +409,11 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
     particles = _empty_particles()
     stage_values = [1.0, 2.0, 3.0, 4.0]
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         stage_value = stage_values.pop(0)
         zeros = jnp.zeros_like(stage_metric.r)
         derivative = jnp.full_like(stage_metric.alpha, stage_value)
@@ -475,7 +492,11 @@ def test_rk4_step_projects_every_gr_metric_stage(monkeypatch):
             St=metric_zeros,
         )
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         derivative = _metric_derivative(stage_metric, alpha_value=0.0)
 
         return derivative._replace(
@@ -544,7 +565,11 @@ def test_rk4_step_keeps_unrestricted_standard_particle_state(monkeypatch):
             St=jnp.zeros_like(stage_metric.r),
         )
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         return _metric_derivative(stage_metric, alpha_value=1.0)
 
     monkeypatch.setattr(time_evolve, "compute_geodesic_terms", fake_compute_geodesic_terms)
@@ -616,7 +641,11 @@ def test_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
             St=jnp.zeros_like(stage_metric.r),
         )
 
-    def fake_metric_time_derivatives(stage_metric, stage_matter_terms):
+    def fake_metric_time_derivatives(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
         derivative_stage_rho.append(stage_matter_terms.rho[0])
         return _metric_derivative(stage_metric, alpha_value=1.0)
 
@@ -764,6 +793,60 @@ def test_deleting_particle_boundary_is_irreversible_across_rk_stages(monkeypatch
     assert jnp.allclose(particles.weight, 0.0)
 
 
+def test_zero_overlap_absorption_is_irreversible_across_rk_stages(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="areal-open",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.0]),
+        ur=jnp.asarray([-1.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="quadratic",
+    )
+    stage_weights = []
+
+    def record_matter_weights(
+        stage_particles,
+        stage_metric,
+        inner_open=False,
+    ):
+        assert inner_open
+        stage_weights.append(stage_particles.weight.copy())
+        return initialize_vacuum_matter_terms(stage_metric)
+
+    def constant_infall(stage_particles, stage_metric):
+        zeros = jnp.zeros_like(stage_particles.r)
+        return zeros, zeros, -jnp.ones_like(stage_particles.r), zeros
+
+    monkeypatch.setattr(
+        time_evolve,
+        "compute_radial_matter_terms",
+        record_matter_weights,
+    )
+    monkeypatch.setattr(time_evolve, "compute_geodesic_terms", constant_infall)
+    with jax.disable_jit():
+        particles, _, _, _ = time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.6,
+            EM_on=False,
+            GR_on=True,
+            particle_boundary=deleting_inner_areal_radius_boundary,
+        )
+
+    assert jnp.allclose(
+        jnp.asarray(stage_weights)[:, 0],
+        jnp.asarray([1.0, 0.0, 0.0, 0.0]),
+    )
+    assert jnp.allclose(particles.weight, 0.0)
+    assert jnp.allclose(particles.r, 0.0)
+
+
 def test_deleting_particle_boundary_preserves_active_particles():
     import RadiShPICR.Z4C as z4c
     from RadiShPICR.Z4C import deleting_particle_boundary as public_boundary
@@ -789,3 +872,234 @@ def test_deleting_particle_boundary_preserves_active_particles():
     assert jnp.allclose(particles.ur, jnp.asarray([0.0, 0.3]))
     assert jnp.allclose(particles.phi, jnp.asarray([0.0, 0.2]))
     assert jnp.allclose(particles.uphi, jnp.asarray([0.0, 0.4]))
+
+
+def test_deleting_inner_areal_radius_boundary_absorbs_zero_overlap_particles():
+    import RadiShPICR.Z4C as z4c
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="areal-open",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0, 2.0, 3.0, 4.0, 5.0, 0.0]),
+        r=jnp.asarray([-0.751, -0.75, -0.25, -0.249, 6.0, -1.0]),
+        ur=jnp.asarray([-1.0, -0.5, 0.5, 0.25, -1.0, 2.0]),
+        phi=jnp.asarray([0.1, 0.2, 0.3, 0.35, 0.4, 0.5]),
+        uphi=jnp.asarray([0.0, 0.1, 0.2, 0.25, 0.3, 0.4]),
+        shape_mode="quadratic",
+    )
+
+    eager_particles = deleting_inner_areal_radius_boundary(
+        particles,
+        metric,
+    )
+    compiled_particles = jax.jit(
+        deleting_inner_areal_radius_boundary
+    )(particles, metric)
+
+    # The quadratic shape has zero physical overlap at r=-0.25 and a small
+    # positive overlap immediately to its right.  The outer particle is not
+    # part of the inner absorbing boundary.
+    expected_weight = jnp.asarray([0.0, 0.0, 0.0, 4.0, 5.0, 0.0])
+    expected_r = jnp.asarray([0.0, 0.0, 0.0, -0.249, 6.0, 0.0])
+    expected_ur = jnp.asarray([0.0, 0.0, 0.0, 0.25, -1.0, 0.0])
+    expected_phi = jnp.asarray([0.0, 0.0, 0.0, 0.35, 0.4, 0.0])
+    expected_uphi = jnp.asarray([0.0, 0.0, 0.0, 0.25, 0.3, 0.0])
+
+    assert z4c.deleting_inner_areal_radius_boundary is (
+        deleting_inner_areal_radius_boundary
+    )
+    for result in (eager_particles, compiled_particles):
+        assert jnp.allclose(result.weight, expected_weight)
+        assert jnp.allclose(result.r, expected_r)
+        assert jnp.allclose(result.ur, expected_ur)
+        assert jnp.allclose(result.phi, expected_phi)
+        assert jnp.allclose(result.uphi, expected_uphi)
+
+
+def test_deleting_inner_areal_radius_boundary_uses_global_grid_minimum():
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    metric = metric._replace(
+        conformal_gt=metric.conformal_gt.at[0].set(9.0),
+    )
+    particles = particle_species(
+        name="areal-open",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.ones(5),
+        r=jnp.asarray([-0.251, 0.25, 0.251, 0.3, 6.0]),
+        ur=jnp.zeros(5),
+        phi=jnp.zeros(5),
+        uphi=jnp.zeros(5),
+        shape_mode="quadratic",
+    )
+
+    particles = deleting_inner_areal_radius_boundary(particles, metric)
+
+    # R_grid = [1.5, 1.0, ...].  Relative to boundary index 1, the TSC shape
+    # has zero physical overlap at r=0.25 and positive overlap just above it.
+    assert jnp.allclose(
+        particles.weight,
+        jnp.asarray([0.0, 0.0, 1.0, 1.0, 1.0]),
+    )
+    assert jnp.allclose(
+        particles.r,
+        jnp.asarray([0.0, 0.0, 0.251, 0.3, 6.0]),
+    )
+
+
+def test_areal_inner_absorption_is_irreversible_when_grid_minimum_returns():
+    from RadiShPICR.Z4C.electric_field import compute_radial_charge_density
+    from RadiShPICR.Z4C.energy_momentum_tensor import (
+        compute_radial_matter_terms,
+    )
+
+    inner_zero_metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    inner_one_metric = inner_zero_metric._replace(
+        conformal_gt=inner_zero_metric.conformal_gt.at[0].set(9.0),
+    )
+    particles = particle_species(
+        name="areal-open",
+        charge=2.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([0.0]),
+        ur=jnp.asarray([-0.4]),
+        phi=jnp.asarray([0.2]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="quadratic",
+    )
+
+    def move_boundary_out_and_back(stage_particles):
+        stage_particles = deleting_inner_areal_radius_boundary(
+            stage_particles,
+            inner_zero_metric,
+        )
+        stage_particles = deleting_inner_areal_radius_boundary(
+            stage_particles,
+            inner_one_metric,
+        )
+        return deleting_inner_areal_radius_boundary(
+            stage_particles,
+            inner_zero_metric,
+        )
+
+    eager_particles = move_boundary_out_and_back(particles)
+    compiled_particles = jax.jit(move_boundary_out_and_back)(particles)
+
+    for result in (eager_particles, compiled_particles):
+        assert jnp.allclose(result.weight, 0.0)
+        assert jnp.allclose(result.r, 0.0)
+        assert jnp.allclose(result.ur, 0.0)
+        assert jnp.allclose(result.phi, 0.0)
+        assert jnp.allclose(result.uphi, 0.0)
+
+        matter_terms = compute_radial_matter_terms(
+            result,
+            inner_zero_metric,
+            True,
+        )
+        charge_density = compute_radial_charge_density(
+            result,
+            inner_zero_metric,
+            True,
+        )
+        for source in (*matter_terms, charge_density):
+            assert jnp.allclose(source, 0.0)
+
+
+def test_particle_boundary_receives_matching_rk_stage_metric(monkeypatch):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = _empty_particles()
+    boundary_metric_values = []
+
+    def constant_metric_derivative(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
+        return _metric_derivative(stage_metric, alpha_value=1.0)
+
+    def record_boundary(stage_particles, stage_metric):
+        boundary_metric_values.append(float(stage_metric.alpha[0]))
+        return stage_particles
+
+    monkeypatch.setattr(
+        time_evolve,
+        "metric_time_derivatives",
+        constant_metric_derivative,
+    )
+    with jax.disable_jit():
+        time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.2,
+            EM_on=False,
+            GR_on=True,
+            particle_boundary=record_boundary,
+        )
+
+    assert jnp.allclose(
+        jnp.asarray(boundary_metric_values),
+        jnp.asarray([1.0, 1.1, 1.1, 1.2, 1.2]),
+    )
+
+
+def test_areal_inner_boundary_uses_open_matter_deposition_at_every_stage(
+    monkeypatch,
+):
+    import RadiShPICR.Z4C.time_evolve as time_evolve
+
+    metric = _flat_metric(jnp.arange(0.5, 5.5, 0.5))
+    particles = particle_species(
+        name="areal-open",
+        charge=0.0,
+        mass=1.0,
+        weight=jnp.asarray([1.0]),
+        r=jnp.asarray([1.0]),
+        ur=jnp.asarray([0.0]),
+        phi=jnp.asarray([0.0]),
+        uphi=jnp.asarray([0.0]),
+        shape_mode="quadratic",
+    )
+    inner_open_values = []
+
+    def record_matter_boundary(
+        stage_particles,
+        stage_metric,
+        inner_open=False,
+    ):
+        inner_open_values.append(inner_open)
+        return initialize_vacuum_matter_terms(stage_metric)
+
+    def zero_metric_derivative(
+        stage_metric,
+        stage_matter_terms,
+        metric_boundary=0,
+    ):
+        return _metric_derivative(stage_metric, alpha_value=0.0)
+
+    monkeypatch.setattr(
+        time_evolve,
+        "compute_radial_matter_terms",
+        record_matter_boundary,
+    )
+    monkeypatch.setattr(
+        time_evolve,
+        "metric_time_derivatives",
+        zero_metric_derivative,
+    )
+    with jax.disable_jit():
+        time_evolve.rk4_step(
+            particles,
+            metric,
+            dt=0.2,
+            EM_on=False,
+            GR_on=True,
+            particle_boundary=deleting_inner_areal_radius_boundary,
+        )
+
+    assert inner_open_values == [True, True, True, True]
