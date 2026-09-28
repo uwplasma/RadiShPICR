@@ -1,12 +1,15 @@
-"""Cold relativistic radial two-stream instability with flat Z4C initial data.
+"""Cold relativistic radial two-stream instability on Z4C initial data.
 
-The Z4C metric uses the live ordinary ``(r, u_r)`` particle convention but is
-initialized as exact Minkowski space.  ``dynamic_gr`` controls whether that
-metric evolves with the particle and electric-field stress-energy or remains
-fixed.  Two equal electron beams move at ``+/- beam_velocity`` through ions
-initialized at rest.  All three populations evolve through the same coupled
-RK4 step.  The plasma occupies a guarded annulus, so no artificial periodic
-seam or particle reflection enters the measured growth interval.
+The Z4C metric uses the live ordinary ``(r, u_r)`` particle convention and is
+initialized by solving the time-symmetric Hamiltonian constraint.  With
+gravity disabled, that solved metric is held fixed so only dynamical
+back-reaction and metric feedback into the plasma are omitted.  Two equal
+neutral electron-ion streams move at ``+/- beam_velocity``.  Co-moving ions
+remove the unperturbed charge separation at the plasma edges; an electron-only
+displacement seeds the instability.  All four populations evolve through the
+same coupled RK4 step.  The plasma
+occupies a guarded annulus, so no artificial periodic seam or particle
+reflection enters the measured growth interval.
 """
 
 from __future__ import annotations
@@ -42,43 +45,57 @@ jax.config.update("jax_enable_x64", True)
 
 import jax.numpy as jnp
 
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
+)
 from RadiShPICR.particles import particle_species
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _interpolate_cell_centered_fields_to_particles,
 )
 from RadiShPICR.Z4C import (
+    METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
+    METRIC_BOUNDARY_SOMMERFELD,
     Z4C_Metric,
     compute_electrostatic_matter_terms,
     compute_radial_charge_density,
     electric_field_energy,
-    kretschmann_scalar,
     misner_sharp_mass,
     rk4_step,
     solve_radial_electric_field,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
-    _proper_radial_shell_volume,
     compute_radial_matter_terms,
 )
+from RadiShPICR.Z4C.derivatives import first_derivative
 from RadiShPICR.Z4C.geodesic import _radial_grid_from_metric
 from RadiShPICR.Z4C.utils import generate_r_grid
 
 
 OUTGOING_ELECTRONS = 0
 INCOMING_ELECTRONS = 1
-IONS = 2
-POPULATION_LABELS = ("outgoing_electrons", "incoming_electrons", "ions")
+OUTGOING_IONS = 2
+INCOMING_IONS = 3
+POPULATION_LABELS = (
+    "outgoing_electrons", "incoming_electrons", "outgoing_ions", "incoming_ions"
+)
 
 DEFAULT_OUTPUT_DIRECTORY = (
-    Path(__file__).resolve().parent / "outputs" / "z4c_two_stream"
+    Path(__file__).resolve().parent / "outputs" / "z4c_two_stream_neutral_streams"
 )
 DIAGNOSTIC_SCHEMA_VERSION = 2
+INITIAL_DATA_RELAXATION = 0.5
+INITIAL_DATA_BOUNDARY_NEWTON_ITERATIONS = 16
+METRIC_BOUNDARY_CODES = {
+    "sommerfeld": METRIC_BOUNDARY_SOMMERFELD,
+    "constraint_preserving": METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
+}
 
 
 @dataclass(frozen=True)
 class TwoStreamParameters:
     dynamic_gr: bool = True
+    metric_boundary: str = "constraint_preserving"
     r_max: float = 80.0
     plasma_r_min: float = 20.0
     plasma_r_max: float = 60.0
@@ -86,7 +103,9 @@ class TwoStreamParameters:
     analysis_r_max: float = 50.0
     num_cells: int = 1600
     particles_per_cell: int = 16
-    epsilon_0: float = 1.0
+    # This geometric normalization keeps the plasma frequency and q/m fixed
+    # while making the default annulus weakly self-gravitating.
+    epsilon_0: float = 1.0e-8
     plasma_frequency: float = 1.0
     electron_charge_to_mass: float = -1.0
     ion_to_electron_mass_ratio: float = 1836.0
@@ -94,13 +113,19 @@ class TwoStreamParameters:
     wavenumber: float = math.pi
     perturbation_amplitude: float = 1.0e-3
     shape_mode: str = "quadratic"
+    initial_data_tolerance: float = 1.0e-10
+    initial_data_max_iterations: int = 200
     dt: float = 0.025
-    final_time: float = 50.0
+    final_time: float = 70.0
     save_every: int = 10
     output_directory: Path = DEFAULT_OUTPUT_DIRECTORY
 
 
 def validate_parameters(params: TwoStreamParameters) -> None:
+    if params.metric_boundary not in METRIC_BOUNDARY_CODES:
+        raise ValueError(
+            "metric_boundary must be sommerfeld or constraint_preserving"
+        )
     if not (
         0.0
         < params.plasma_r_min
@@ -127,6 +152,10 @@ def validate_parameters(params: TwoStreamParameters) -> None:
         raise ValueError("wavenumber must be positive and amplitude nonnegative")
     if params.shape_mode not in ("nearest", "linear", "quadratic"):
         raise ValueError("shape_mode must be nearest, linear, or quadratic")
+    if params.initial_data_tolerance <= 0.0:
+        raise ValueError("initial_data_tolerance must be positive")
+    if params.initial_data_max_iterations < 1:
+        raise ValueError("initial_data_max_iterations must be positive")
     if params.dt <= 0.0 or params.final_time < 0.0 or params.save_every < 1:
         raise ValueError("dt and save_every must be positive and final_time nonnegative")
 
@@ -156,6 +185,317 @@ def make_flat_metric(params: TwoStreamParameters) -> Z4C_Metric:
         nu=jnp.asarray(0.0, dtype=r.dtype),
         r=r,
         dr=r[1] - r[0],
+    )
+
+
+def _particles_with_initial_metric_momentum(
+    particles: particle_species,
+    metric: Z4C_Metric,
+    radial_orthonormal_momentum,
+) -> particle_species:
+    """Lower the prescribed local radial momentum with the initial metric."""
+
+    radial_metric_at_particles = _interpolate_cell_centered_fields_to_particles(
+        (metric.conformal_grr / metric.chi)[jnp.newaxis, :],
+        particles.r,
+        _radial_grid_from_metric(metric),
+        shape_mode=particles.get_shape(),
+        field_parities=jnp.asarray((1,)),
+    )[0]
+    covariant_radial_momentum = (
+        jnp.sqrt(radial_metric_at_particles) * radial_orthonormal_momentum
+    )
+
+    return type(particles)(
+        name=particles.name,
+        charge=particles.charges,
+        mass=particles.masses,
+        weight=particles.weight,
+        r=particles.r,
+        ur=covariant_radial_momentum,
+        phi=particles.phi,
+        uphi=particles.uphi,
+        shape_mode=particles.shape_mode,
+    )
+
+
+def _chi_sommerfeld_residual(metric: Z4C_Metric, conformal_factor):
+    """Return the production outer-boundary residual for ``chi = psi^-4``."""
+
+    chi = conformal_factor**-4
+    dchi_dr = first_derivative(chi, metric.dr, parity=1)
+
+    return dchi_dr[-1] + (chi[-1] - 1.0) / metric.r[-1]
+
+
+def _solve_radial_poisson_equation(
+    metric: Z4C_Metric,
+    source,
+    boundary_tolerance,
+):
+    """Solve ``laplacian(psi) = source`` with the production chi boundary."""
+
+    inner_radius = jnp.maximum(metric.r - 0.5 * metric.dr, 0.0)
+    outer_radius = metric.r + 0.5 * metric.dr
+    coordinate_shell_volume = (4.0 * jnp.pi / 3.0) * (
+        outer_radius**3 - inner_radius**3
+    )
+
+    # The face flux is the finite-volume integral of the spherical Laplacian.
+    enclosed_source = jnp.cumsum(source * coordinate_shell_volume) / (4.0 * jnp.pi)
+    face_gradient = jnp.concatenate(
+        (
+            jnp.zeros_like(enclosed_source[:1]),
+            enclosed_source / outer_radius**2,
+        )
+    )
+
+    # Integrate the source-determined gradients inward from an unknown outer
+    # value.  The old psi Robin value is a close starting point for Newton's
+    # method, while the converged additive constant makes chi satisfy the exact
+    # production one-sided Sommerfeld stencil.
+    outer_face_field = 1.0 - outer_radius[-1] * face_gradient[-1]
+    outer_cell_field = outer_face_field - 0.5 * metric.dr * face_gradient[-1]
+    cell_jumps = metric.dr * face_gradient[1:-1]
+    inward_change = jnp.concatenate(
+        (
+            jnp.cumsum(cell_jumps[::-1])[::-1],
+            jnp.zeros_like(outer_cell_field[jnp.newaxis]),
+        )
+    )
+
+    minimum_outer_cell_field = (
+        jnp.max(inward_change) + jnp.sqrt(jnp.finfo(source.dtype).eps)
+    )
+    outer_cell_field = jnp.maximum(
+        outer_cell_field,
+        minimum_outer_cell_field,
+    )
+
+    def newton_iteration(_, current_outer_cell_field):
+        conformal_factor = current_outer_cell_field - inward_change
+        residual = _chi_sommerfeld_residual(metric, conformal_factor)
+
+        dchi_douter_cell = -4.0 * conformal_factor**-5
+        dresidual_douter_cell = first_derivative(
+            dchi_douter_cell,
+            metric.dr,
+            parity=1,
+        )[-1]
+        dresidual_douter_cell += dchi_douter_cell[-1] / metric.r[-1]
+
+        candidate = (
+            current_outer_cell_field
+            - residual / dresidual_douter_cell
+        )
+        positive_candidate = jnp.where(
+            candidate > minimum_outer_cell_field,
+            candidate,
+            0.5 * (
+                current_outer_cell_field + minimum_outer_cell_field
+            ),
+        )
+        finite_candidate = jnp.where(
+            jnp.isfinite(positive_candidate),
+            positive_candidate,
+            current_outer_cell_field,
+        )
+
+        return jnp.where(
+            jnp.abs(residual) > boundary_tolerance,
+            finite_candidate,
+            current_outer_cell_field,
+        )
+
+    outer_cell_field = jax.lax.fori_loop(
+        0,
+        INITIAL_DATA_BOUNDARY_NEWTON_ITERATIONS,
+        newton_iteration,
+        outer_cell_field,
+    )
+
+    return outer_cell_field - inward_change
+
+
+def _radial_poisson_residual(metric: Z4C_Metric, field, source):
+    inner_radius = jnp.maximum(metric.r - 0.5 * metric.dr, 0.0)
+    outer_radius = metric.r + 0.5 * metric.dr
+    coordinate_shell_volume = (4.0 * jnp.pi / 3.0) * (
+        outer_radius**3 - inner_radius**3
+    )
+
+    # The additive normalization does not change the source-determined outer
+    # flux.  Reconstruct that flux directly instead of using the removed psi
+    # Robin condition.
+    outer_gradient = jnp.sum(source * coordinate_shell_volume) / (
+        4.0 * jnp.pi * outer_radius[-1] ** 2
+    )
+    face_gradient = jnp.concatenate(
+        (
+            jnp.zeros_like(field[:1]),
+            (field[1:] - field[:-1]) / metric.dr,
+            outer_gradient[jnp.newaxis],
+        )
+    )
+    face_radius = jnp.concatenate((inner_radius[:1], outer_radius))
+    laplacian = (
+        4.0
+        * jnp.pi
+        * jnp.diff(face_radius**2 * face_gradient)
+        / coordinate_shell_volume
+    )
+
+    return laplacian - source
+
+
+def _time_symmetric_constraint_update(
+    flat_metric: Z4C_Metric,
+    reference_particles: particle_species,
+    radial_orthonormal_momentum,
+    conformal_factor,
+    epsilon_0: float,
+    boundary_tolerance: float,
+):
+    metric = flat_metric._replace(chi=conformal_factor**-4)
+    particles = _particles_with_initial_metric_momentum(
+        reference_particles,
+        metric,
+        radial_orthonormal_momentum,
+    )
+
+    charge_density = compute_radial_charge_density(particles, metric)
+    E_r = solve_radial_electric_field(
+        metric,
+        charge_density,
+        epsilon_0=epsilon_0,
+    )
+    matter_terms = total_matter_terms(
+        particles,
+        metric,
+        E_r,
+        epsilon_0,
+    )
+
+    # For gamma_ij = psi^4 delta_ij and K_ij = 0, the Hamiltonian constraint is
+    # laplacian(psi) = -2 pi psi^5 rho.  rho includes particles and E-field energy.
+    hamiltonian_source = -2.0 * jnp.pi * conformal_factor**5 * matter_terms.rho
+    updated_conformal_factor = _solve_radial_poisson_equation(
+        flat_metric,
+        hamiltonian_source,
+        boundary_tolerance,
+    )
+
+    return updated_conformal_factor, particles, charge_density, E_r, matter_terms
+
+
+def solve_time_symmetric_initial_data(
+    params: TwoStreamParameters,
+    flat_metric: Z4C_Metric,
+    particles: particle_species,
+):
+    """Solve the coupled conformally flat Hamiltonian and Gauss constraints."""
+
+    radial_orthonormal_momentum = particles.ur
+    conformal_factor = jnp.ones_like(flat_metric.r)
+    constraint_update = jax.jit(_time_symmetric_constraint_update)
+
+    for iteration in range(1, params.initial_data_max_iterations + 1):
+        updated_conformal_factor, _, _, _, _ = constraint_update(
+            flat_metric,
+            particles,
+            radial_orthonormal_momentum,
+            conformal_factor,
+            params.epsilon_0,
+            params.initial_data_tolerance,
+        )
+        jax.block_until_ready(updated_conformal_factor)
+
+        update = updated_conformal_factor - conformal_factor
+        relative_update = float(
+            jnp.max(jnp.abs(update))
+            / jnp.maximum(jnp.max(jnp.abs(updated_conformal_factor)), 1.0)
+        )
+        if not np.isfinite(relative_update) or np.any(
+            np.asarray(updated_conformal_factor) <= 0.0
+        ):
+            raise RuntimeError("the time-symmetric initial-data solve became invalid")
+
+        if relative_update <= params.initial_data_tolerance:
+            conformal_factor = updated_conformal_factor
+            break
+
+        conformal_factor = (
+            conformal_factor
+            + INITIAL_DATA_RELAXATION * update
+        )
+    else:
+        raise RuntimeError(
+            "the time-symmetric initial-data solve did not converge within "
+            f"{params.initial_data_max_iterations} iterations"
+        )
+
+    metric = flat_metric._replace(chi=conformal_factor**-4)
+    _, particles, charge_density, E_r, matter_terms = constraint_update(
+        flat_metric,
+        particles,
+        radial_orthonormal_momentum,
+        conformal_factor,
+        params.epsilon_0,
+        params.initial_data_tolerance,
+    )
+    jax.block_until_ready(E_r)
+
+    hamiltonian_source = -2.0 * jnp.pi * conformal_factor**5 * matter_terms.rho
+    solved_conformal_factor = _solve_radial_poisson_equation(
+        flat_metric,
+        hamiltonian_source,
+        params.initial_data_tolerance,
+    )
+    fixed_point_residual = float(
+        jnp.max(jnp.abs(solved_conformal_factor - conformal_factor))
+        / jnp.maximum(jnp.max(jnp.abs(conformal_factor)), 1.0)
+    )
+    poisson_residual = _radial_poisson_residual(
+        flat_metric,
+        conformal_factor,
+        hamiltonian_source,
+    )
+    hamiltonian_constraint = -8.0 * conformal_factor**-5 * poisson_residual
+    hamiltonian_constraint_linf = float(
+        jnp.max(jnp.abs(hamiltonian_constraint))
+    )
+    relative_hamiltonian_constraint_linf = float(
+        jnp.max(jnp.abs(hamiltonian_constraint))
+        / jnp.maximum(16.0 * jnp.pi * jnp.max(jnp.abs(matter_terms.rho)), 1.0e-30)
+    )
+    chi_sommerfeld_residual = float(
+        jnp.abs(_chi_sommerfeld_residual(metric, conformal_factor))
+    )
+    if (
+        not np.isfinite(chi_sommerfeld_residual)
+        or chi_sommerfeld_residual > params.initial_data_tolerance
+    ):
+        raise RuntimeError(
+            "the time-symmetric initial data do not satisfy the production "
+            "chi Sommerfeld boundary condition"
+        )
+
+    initial_data_diagnostics = {
+        "iterations": iteration,
+        "relative_fixed_point_residual": fixed_point_residual,
+        "hamiltonian_constraint_linf": hamiltonian_constraint_linf,
+        "relative_hamiltonian_constraint_linf": (
+            relative_hamiltonian_constraint_linf
+        ),
+        "chi_sommerfeld_residual": chi_sommerfeld_residual,
+    }
+
+    return (
+        metric,
+        particles,
+        charge_density,
+        E_r,
+        initial_data_diagnostics,
     )
 
 
@@ -225,19 +565,24 @@ def make_plasma_particles(
 
     gamma_b = 1.0 / math.sqrt(1.0 - params.beam_velocity**2)
     beam_momentum = gamma_b * params.beam_velocity
-    r = np.concatenate((radius, radius, base_radius))
+    # Each unperturbed stream is charge and current neutral.  The two signs
+    # also cancel the total momentum density, including the displaced seed.
+    # ur is specific momentum: ions use the same gamma*v as their electrons.
+    r = np.concatenate((radius, radius, base_radius, base_radius))
     ur = np.concatenate(
         (
             np.full_like(radius, beam_momentum),
             np.full_like(radius, -beam_momentum),
-            np.zeros_like(base_radius),
+            np.full_like(base_radius, beam_momentum),
+            np.full_like(base_radius, -beam_momentum),
         )
     )
-    weight = np.concatenate((one_beam_mass, one_beam_mass, 2.0 * one_beam_mass))
+    weight = np.tile(one_beam_mass, 4)
     charge = np.concatenate(
         (
             np.full_like(radius, params.electron_charge_to_mass),
             np.full_like(radius, params.electron_charge_to_mass),
+            np.full_like(base_radius, -params.electron_charge_to_mass),
             np.full_like(base_radius, -params.electron_charge_to_mass),
         )
     )
@@ -246,13 +591,15 @@ def make_plasma_particles(
             np.ones_like(radius),
             np.ones_like(radius),
             np.full_like(base_radius, params.ion_to_electron_mass_ratio),
+            np.full_like(base_radius, params.ion_to_electron_mass_ratio),
         )
     )
     population_id = np.concatenate(
         (
             np.full(radius.size, OUTGOING_ELECTRONS, dtype=np.int32),
             np.full(radius.size, INCOMING_ELECTRONS, dtype=np.int32),
-            np.full(base_radius.size, IONS, dtype=np.int32),
+            np.full(base_radius.size, OUTGOING_IONS, dtype=np.int32),
+            np.full(base_radius.size, INCOMING_IONS, dtype=np.int32),
         )
     )
 
@@ -272,10 +619,16 @@ def make_plasma_particles(
 
 
 def cold_two_stream_growth_rate(params: TwoStreamParameters) -> float:
-    """Return the local cold symmetric-beam amplitude growth rate."""
+    """Return the local cold neutral-stream amplitude growth rate."""
 
     gamma_b = 1.0 / math.sqrt(1.0 - params.beam_velocity**2)
-    omega_squared = params.plasma_frequency**2 / gamma_b**3
+    # Co-moving electrons and ions have the same Doppler denominator in the
+    # longitudinal susceptibility; their plasma frequencies squared add.
+    omega_squared = (
+        params.plasma_frequency**2
+        * (1.0 + 1.0 / params.ion_to_electron_mass_ratio)
+        / gamma_b**3
+    )
     kv_squared = (params.wavenumber * params.beam_velocity) ** 2
     unstable_omega_squared = (
         0.5
@@ -342,7 +695,7 @@ def target_mode_diagnostics(
 
     r = np.asarray(metric.r)
     field = np.asarray(E_r)
-    volume = np.asarray(_proper_radial_shell_volume(metric))
+    volume = np.asarray(proper_radial_shell_volume(metric))
     inside = (r >= params.analysis_r_min) & (r <= params.analysis_r_max)
     r = r[inside]
     field = field[inside]
@@ -384,7 +737,7 @@ def gauss_law_residual(
     dr = float(metric.dr)
     face_radius = np.concatenate((np.array([0.0]), r + 0.5 * dr))
     face_flux = 4.0 * np.pi * face_radius**2 * face_field
-    volume = np.asarray(_proper_radial_shell_volume(metric))
+    volume = np.asarray(proper_radial_shell_volume(metric))
     reconstructed_charge_density = (
         epsilon_0 * np.diff(face_flux) / volume
     )
@@ -473,9 +826,9 @@ def collect_diagnostic_row(
     ion_particles = particles_in_populations(
         particles,
         population_id,
-        (IONS,),
+        (OUTGOING_IONS, INCOMING_IONS),
     )
-    volume = np.asarray(_proper_radial_shell_volume(metric))
+    volume = np.asarray(proper_radial_shell_volume(metric))
     total_charge = float(np.sum(np.asarray(charge_density) * volume))
     electron_charge = float(np.sum(np.asarray(electron_particles.get_charge())))
     ion_charge = float(np.sum(np.asarray(ion_particles.get_charge())))
@@ -547,6 +900,7 @@ def write_metric_snapshot(
     time: float,
     dynamic_gr: bool,
     epsilon_0: float,
+    initial_metric: str,
 ) -> Path:
     path = output_directory / f"metric_step_{step:06d}.npz"
     electron_particles = particles_in_populations(
@@ -557,7 +911,7 @@ def write_metric_snapshot(
     ion_particles = particles_in_populations(
         particles,
         population_id,
-        (IONS,),
+        (OUTGOING_IONS, INCOMING_IONS),
     )
     electron_charge_density = compute_radial_charge_density(
         electron_particles,
@@ -572,7 +926,6 @@ def write_metric_snapshot(
     )
     areal_radius = metric.r * jnp.sqrt(metric.conformal_gt / metric.chi)
     mass_profile = misner_sharp_mass(metric)
-    kretschmann = kretschmann_scalar(metric, matter_terms)
     np.savez_compressed(
         path,
         r=np.asarray(metric.r),
@@ -589,7 +942,6 @@ def write_metric_snapshot(
         areal_radius=np.asarray(areal_radius),
         E_r=np.asarray(E_r),
         misner_sharp_mass=np.asarray(mass_profile),
-        kretschmann_scalar=np.asarray(kretschmann),
         charge_density=np.asarray(charge_density),
         electron_charge_density=np.asarray(electron_charge_density),
         ion_charge_density=np.asarray(ion_charge_density),
@@ -601,9 +953,9 @@ def write_metric_snapshot(
         step=int(step),
         time=float(time),
         diagnostic_schema_version=DIAGNOSTIC_SCHEMA_VERSION,
-        initial_metric="minkowski_z4c",
+        initial_metric=initial_metric,
         dynamic_gr=dynamic_gr,
-        fixed_minkowski=not dynamic_gr,
+        fixed_minkowski=metric_is_exactly_minkowski(metric),
         particle_state_variables="r_ur",
     )
     return path
@@ -661,6 +1013,8 @@ def write_run_parameters(
     metric: Z4C_Metric,
     particles: particle_species,
     population_id: np.ndarray,
+    initial_metric: str,
+    initial_data_diagnostics: dict[str, float | int],
 ) -> Path:
     values = asdict(params)
     values["diagnostic_schema_version"] = DIAGNOSTIC_SCHEMA_VERSION
@@ -668,8 +1022,8 @@ def write_run_parameters(
     values["r_min"] = 0.0
     values["grid_spacing"] = float(metric.dr)
     values["num_steps"] = int(round(params.final_time / params.dt))
-    electron_mask = population_id != IONS
-    ion_mask = population_id == IONS
+    electron_mask = np.isin(population_id, (OUTGOING_ELECTRONS, INCOMING_ELECTRONS))
+    ion_mask = np.isin(population_id, (OUTGOING_IONS, INCOMING_IONS))
     values["num_electrons"] = int(np.count_nonzero(electron_mask))
     values["num_ions"] = int(np.count_nonzero(ion_mask))
     values["electron_mass_density"] = (
@@ -703,13 +1057,24 @@ def write_run_parameters(
         "analysis_window": [params.analysis_r_min, params.analysis_r_max],
         "local_theory_benchmark": "homogeneous_slab_approximation",
     }
-    values["initial_metric"] = "minkowski_z4c"
+    values["initial_metric"] = initial_metric
+    values["initial_data"] = {
+        "spatial_metric": "conformally_flat_hamiltonian_constraint",
+        "extrinsic_curvature": "zero",
+        "shift": "zero",
+        "lapse": "one",
+        "outer_boundary": "discrete_chi_sommerfeld",
+        **initial_data_diagnostics,
+    }
     values["metric_evolution"] = (
-        "dynamic_z4c" if params.dynamic_gr else "fixed_minkowski"
+        "dynamic_z4c" if params.dynamic_gr else "fixed_initial_z4c"
     )
-    values["fixed_metric"] = None if params.dynamic_gr else "minkowski_z4c"
+    values["metric_outer_boundary"] = params.metric_boundary
+    values["fixed_metric"] = (
+        None if params.dynamic_gr else "time_symmetric_conformally_flat_z4c"
+    )
     values["particle_boundary"] = "none_guarded_annulus"
-    values["ion_background"] = "mobile_particle_ions_initialized_at_rest"
+    values["ion_background"] = "two_comoving_neutral_streams"
     values["nonlinear_validation_target"] = "BGK_trapped_particle_island"
     values["gauss_residual_definition"] = (
         "cell_center_to_face_reconstruction_of_finite_volume_solve"
@@ -753,27 +1118,43 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
             "Move it or select a fresh --output-dir before starting the run."
         )
 
-    metric = make_flat_metric(params)
-    particles, population_id = make_plasma_particles(params, metric, perturb=True)
-
-    compute_charge_jit = jax.jit(compute_radial_charge_density)
-    step_jit = jax.jit(rk4_step)
-    charge_density = compute_charge_jit(particles, metric)
-    E_r = solve_radial_electric_field(
-        metric,
-        charge_density,
-        epsilon_0=params.epsilon_0,
+    flat_metric = make_flat_metric(params)
+    particles, population_id = make_plasma_particles(
+        params,
+        flat_metric,
+        perturb=True,
     )
-    jax.block_until_ready(E_r)
 
-    if not metric_is_exactly_minkowski(metric):
-        raise RuntimeError("the Z4C initial data are not exactly Minkowski")
+    step_jit = jax.jit(rk4_step)
+    metric_boundary = METRIC_BOUNDARY_CODES[params.metric_boundary]
+    (
+        metric,
+        particles,
+        charge_density,
+        E_r,
+        initial_data_diagnostics,
+    ) = solve_time_symmetric_initial_data(
+        params,
+        flat_metric,
+        particles,
+    )
+    initial_metric = "time_symmetric_conformally_flat_z4c"
+
+    areal_radius = np.asarray(
+        metric.r * jnp.sqrt(metric.conformal_gt / metric.chi)
+    )
+    if np.any(np.diff(areal_radius) <= 0.0):
+        raise RuntimeError(
+            "the time-symmetric initial data contain a trapped/non-monotone "
+            "areal-radius region; lower epsilon_0 or enlarge r_max before "
+            "using the guarded-annulus two-stream evolution"
+        )
 
     num_steps = int(round(params.final_time / params.dt))
     stage_safe_margin = 2.0 * float(metric.dr)
     if num_steps > 0:
-        # On Minkowski data |dr/dt| < 1, so one additional dt guarantees that
-        # every intermediate RK4 stage stays outside the two-cell guard.
+        # The initial conformal solution has alpha=1 and gamma_rr >= 1, so
+        # |dr/dt| < 1.  One dt keeps every initial RK stage outside the guard.
         stage_safe_margin += params.dt
     if particle_boundary_margin(particles, params.r_max) <= stage_safe_margin:
         raise RuntimeError(
@@ -787,7 +1168,14 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
     phase_space_directory.mkdir(parents=True, exist_ok=True)
     diagnostics_path = output_directory / "diagnostics.csv"
 
-    write_run_parameters(params, metric, particles, population_id)
+    write_run_parameters(
+        params,
+        metric,
+        particles,
+        population_id,
+        initial_metric,
+        initial_data_diagnostics,
+    )
 
     initial_total_energy = None
     row, initial_total_energy = collect_diagnostic_row(
@@ -813,6 +1201,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         0.0,
         params.dynamic_gr,
         params.epsilon_0,
+        initial_metric,
     )
     write_phase_space_snapshot(
         particles,
@@ -831,7 +1220,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         desc=(
             "evolving dynamical Z4C two-stream"
             if params.dynamic_gr
-            else "evolving fixed-Minkowski Z4C two-stream"
+            else "evolving fixed-background Z4C two-stream"
         ),
         unit="t",
     ) as progress_bar:
@@ -851,6 +1240,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                 EM_on=True,
                 GR_on=params.dynamic_gr,
                 epsilon_0=params.epsilon_0,
+                metric_boundary=metric_boundary,
             )
             jax.block_until_ready(E_r)
             time = step * params.dt
@@ -887,6 +1277,7 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
                     time,
                     params.dynamic_gr,
                     params.epsilon_0,
+                    initial_metric,
                 )
                 write_phase_space_snapshot(
                     particles,
@@ -915,7 +1306,19 @@ def run_two_stream(params: TwoStreamParameters) -> dict[str, object]:
         "time": time,
         "finite_state": bool(row["finite_state"]),
         "dynamic_gr": params.dynamic_gr,
+        "metric_boundary": params.metric_boundary,
         "fixed_minkowski": metric_is_exactly_minkowski(metric),
+        "initial_metric": initial_metric,
+        "initial_data_iterations": initial_data_diagnostics["iterations"],
+        "initial_hamiltonian_constraint_linf": initial_data_diagnostics[
+            "hamiltonian_constraint_linf"
+        ],
+        "initial_relative_hamiltonian_constraint_linf": (
+            initial_data_diagnostics["relative_hamiltonian_constraint_linf"]
+        ),
+        "initial_chi_sommerfeld_residual": initial_data_diagnostics[
+            "chi_sommerfeld_residual"
+        ],
         "final_misner_sharp_mass": float(row["misner_sharp_mass"]),
         "final_gravitational_binding_energy": float(
             row["gravitational_binding_energy"]
@@ -930,14 +1333,23 @@ def parse_args() -> argparse.Namespace:
     defaults = TwoStreamParameters()
     parser = argparse.ArgumentParser(
         description=(
-            "Run a cold radial two-stream instability from flat Z4C initial data."
+            "Run a cold radial two-stream instability on Z4C initial data."
         )
     )
     parser.add_argument(
         "--dynamic-gr",
         action=argparse.BooleanOptionalAction,
         default=defaults.dynamic_gr,
-        help="evolve Z4C from the initially flat metric (default: keep it fixed)",
+        help=(
+            "evolve Z4C from solved time-symmetric initial data; disable to hold "
+            "that initial metric fixed"
+        ),
+    )
+    parser.add_argument(
+        "--metric-boundary",
+        choices=("sommerfeld", "constraint-preserving"),
+        default=defaults.metric_boundary.replace("_", "-"),
+        help="outer boundary for the dynamical Z4C metric",
     )
     parser.add_argument("--output-dir", type=Path, default=defaults.output_directory)
     parser.add_argument("--r-max", type=float, default=defaults.r_max)
@@ -950,7 +1362,7 @@ def parse_args() -> argparse.Namespace:
         "--particles-per-cell",
         type=int,
         default=defaults.particles_per_cell,
-        help="quiet-start macro-particles per cell in each electron beam",
+        help="quiet-start macro-particles per cell in each electron or ion stream",
     )
     parser.add_argument("--epsilon-0", type=float, default=defaults.epsilon_0)
     parser.add_argument(
@@ -973,7 +1385,7 @@ def parse_args() -> argparse.Namespace:
         "--beam-velocity",
         type=float,
         default=defaults.beam_velocity,
-        help="magnitude of each beam velocity in the fixed-ion frame",
+        help="local speed of each neutral stream in the common zero-momentum frame",
     )
     parser.add_argument("--wavenumber", type=float, default=defaults.wavenumber)
     parser.add_argument(
@@ -987,6 +1399,16 @@ def parse_args() -> argparse.Namespace:
         choices=("nearest", "linear", "quadratic"),
         default=defaults.shape_mode,
     )
+    parser.add_argument(
+        "--initial-data-tolerance",
+        type=float,
+        default=defaults.initial_data_tolerance,
+    )
+    parser.add_argument(
+        "--initial-data-max-iterations",
+        type=int,
+        default=defaults.initial_data_max_iterations,
+    )
     parser.add_argument("--dt", type=float, default=defaults.dt)
     parser.add_argument("--final-time", type=float, default=defaults.final_time)
     parser.add_argument("--save-every", type=int, default=defaults.save_every)
@@ -998,6 +1420,7 @@ def main() -> None:
     params = replace(
         TwoStreamParameters(),
         dynamic_gr=args.dynamic_gr,
+        metric_boundary=args.metric_boundary.replace("-", "_"),
         output_directory=args.output_dir,
         r_max=args.r_max,
         plasma_r_min=args.plasma_r_min,
@@ -1014,6 +1437,8 @@ def main() -> None:
         wavenumber=args.wavenumber,
         perturbation_amplitude=args.perturbation_amplitude,
         shape_mode=args.shape_mode,
+        initial_data_tolerance=args.initial_data_tolerance,
+        initial_data_max_iterations=args.initial_data_max_iterations,
         dt=args.dt,
         final_time=args.final_time,
         save_every=args.save_every,

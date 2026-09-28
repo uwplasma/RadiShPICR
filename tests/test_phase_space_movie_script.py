@@ -35,18 +35,24 @@ def write_snapshot(
     time: float,
     radius=None,
     radial_momentum=None,
+    neutral_streams=False,
 ):
     phase_space_directory.mkdir(parents=True, exist_ok=True)
     if radius is None:
         radius = np.array([0.1, 0.3, 0.6, 0.9]) + 0.01 * step
     if radial_momentum is None:
         radial_momentum = np.array([0.22, 0.18, -0.21, -0.17])
+    population_id = np.array([0, 0, 1, 1])
+    population_labels = ["outgoing_electrons", "incoming_electrons"]
+    if neutral_streams:
+        population_id = np.arange(4)
+        population_labels += ["outgoing_ions", "incoming_ions"]
     np.savez_compressed(
         phase_space_directory / f"phase_space_step_{step:06d}.npz",
         r=np.asarray(radius),
         ur=np.asarray(radial_momentum),
-        population_id=np.array([0, 0, 1, 1]),
-        population_labels=np.array(["outgoing_electrons", "incoming_electrons"]),
+        population_id=population_id,
+        population_labels=np.asarray(population_labels),
         step=step,
         time=time,
     )
@@ -72,7 +78,6 @@ def write_metric_snapshot(metric_directory: Path, step: int, time: float):
         theta=0.05 * perturbation,
         Gamma=-0.4 * perturbation,
         E_r=0.5 * np.sin(phase),
-        kretschmann_scalar=1.0e-4 * np.cos(phase),
         areal_radius=radius * (1.0 + 0.1 * perturbation),
         misner_sharp_mass=0.01 * radius,
         matter_rho=1.0e-3 * (1.0 + np.cos(phase)),
@@ -161,6 +166,33 @@ def test_metric_movie_limits_are_fixed_from_the_complete_frame_set():
     assert module._cell_centered_radial_limits(
         np.array([0.05, 0.15, 0.25])
     ) == pytest.approx((0.0, 0.3))
+
+
+def test_misner_sharp_energy_plot_tracks_mass_and_relative_drift(
+    tmp_path,
+    monkeypatch,
+):
+    module = load_diagnostic_script_module()
+    time = np.array([0.0, 0.5, 1.0])
+    mass = np.array([10.0, 10.1, 9.8])
+    captured = {}
+    subplots = module.plt.subplots
+
+    def capture_subplots(*args, **kwargs):
+        figure, axes = subplots(*args, **kwargs)
+        captured["axes"] = axes
+        return figure, axes
+
+    monkeypatch.setattr(module.plt, "subplots", capture_subplots)
+    plot_path = tmp_path / "misner_sharp_energy.png"
+
+    module.make_misner_sharp_energy_plot(time, mass, plot_path, dpi=60)
+
+    axes = captured["axes"]
+    assert plot_path.stat().st_size > 0
+    assert np.array_equal(axes[0].lines[0].get_ydata(), mass)
+    assert np.allclose(axes[1].lines[0].get_ydata(), [0.0, 0.01, -0.02])
+    assert "2.000e-02" in axes[1].texts[0].get_text()
 
 
 def test_snapshot_schema_requires_raw_radial_momentum(tmp_path):
@@ -304,7 +336,8 @@ def test_renderer_rejects_output_from_the_old_schema(tmp_path):
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None,
     reason="ffmpeg and ffprobe are required for the movie smoke test",
 )
-def test_render_writes_all_plots_and_two_frame_h264_movies(tmp_path):
+@pytest.mark.parametrize("neutral_streams", [False, True])
+def test_render_writes_all_plots_and_two_frame_h264_movies(tmp_path, neutral_streams):
     module = load_diagnostic_script_module()
     output_directory = tmp_path / "two_stream_output"
     phase_space_directory = output_directory / "phase_space"
@@ -358,13 +391,14 @@ def test_render_writes_all_plots_and_two_frame_h264_movies(tmp_path):
             stream,
         )
 
-    write_snapshot(phase_space_directory, 0, 0.0)
+    write_snapshot(phase_space_directory, 0, 0.0, neutral_streams=neutral_streams)
     write_snapshot(
         phase_space_directory,
         1,
         0.1,
         radius=[0.12, 0.32, 0.58, 0.88],
         radial_momentum=[0.20, 0.24, -0.18, -0.23],
+        neutral_streams=neutral_streams,
     )
     metric_directory = output_directory / "metric"
     write_metric_snapshot(metric_directory, 0, 0.0)
@@ -378,13 +412,14 @@ def test_render_writes_all_plots_and_two_frame_h264_movies(tmp_path):
     )
 
     assert paths["energy_plot"].stat().st_size > 0
+    assert paths["misner_sharp_energy_plot"].stat().st_size > 0
     assert paths["energy_composition_plot"].stat().st_size > 0
     assert paths["growth_fit"].stat().st_size > 0
     movie_names = (
         "phase_space_movie",
         "metric_geometry_movie",
         "extrinsic_z4c_movie",
-        "electric_kretschmann_movie",
+        "electric_field_movie",
     )
     for movie_name in movie_names:
         assert paths[movie_name].stat().st_size > 0

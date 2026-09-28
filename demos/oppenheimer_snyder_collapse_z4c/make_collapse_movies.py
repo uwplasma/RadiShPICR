@@ -17,7 +17,10 @@ from matplotlib.colors import LogNorm
 DEFAULT_OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent
     / "outputs"
-    / "z4c_oppenheimer_snyder_deleting"
+    / (
+        "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
+        "_nonnegative_density_conserving_tsc"
+    )
 )
 
 BSSN_VARIABLES = (
@@ -212,7 +215,7 @@ def parse_arguments():
     )
     parser.add_argument(
         "--boundary-name",
-        choices=("reflecting", "deleting"),
+        choices=("reflecting", "deleting", "areal_inner_open"),
         help="override the particle boundary recorded by the collapse run",
     )
     parser.add_argument("--radial-limit", type=float, default=15.0)

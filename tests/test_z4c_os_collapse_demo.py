@@ -1,14 +1,20 @@
+import json
+import sys
+
 import jax.numpy as jnp
 import numpy as np
 
 from demos.oppenheimer_snyder_collapse_z4c import (
+    make_collapse_movies,
     run_oppenheimer_snyder_z4c as os_z4c,
+)
+from RadiShPICR.particles.shape_factors.common import (
+    proper_radial_shell_volume,
 )
 from RadiShPICR.ConstraintBasedRelativity.geodesic import (
     compute_geodesic_terms as compute_constrained_geodesic_terms,
 )
 from RadiShPICR.Z4C.energy_momentum_tensor import (
-    _proper_radial_shell_volume,
     compute_radial_matter_terms,
 )
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
@@ -148,7 +154,7 @@ def test_reduced_os_initial_state_uses_standard_particles_and_deposits_energy():
     )
 
     matter_terms = compute_radial_matter_terms(particles, metric)
-    proper_shell_volume = _proper_radial_shell_volume(metric)
+    proper_shell_volume = proper_radial_shell_volume(metric)
     deposited_energy = jnp.sum(matter_terms.rho * proper_shell_volume)
     particle_energy = jnp.sum(particles.get_mass())
 
@@ -198,3 +204,59 @@ def test_freefall_time_step_does_not_restrict_vacuum_state():
     particles.weight = jnp.zeros_like(particles.weight)
 
     assert np.isinf(os_z4c.freefall_collapse_time_step(particles, metric))
+
+
+def test_movie_cli_uses_areal_inner_open_campaign(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["make_collapse_movies.py"])
+
+    args = make_collapse_movies.parse_arguments()
+
+    assert args.output_directory.name == (
+        "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
+        "_nonnegative_density_conserving_tsc"
+    )
+
+
+def test_collapse_cli_defaults_to_two_ghost_quadratic_campaign(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["run_oppenheimer_snyder_z4c.py"])
+
+    args = os_z4c.parse_arguments()
+
+    assert args.shape_mode == "quadratic"
+    assert args.output_directory.name == (
+        "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
+        "_nonnegative_density_conserving_tsc"
+    )
+    assert os_z4c.PARTICLE_DEPOSITION_SCHEME == (
+        "ruyten_density_conserving_quadratic_nonnegative"
+    )
+    assert os_z4c.INNER_PARTICLE_ABSORPTION == (
+        "zero_physical_overlap_or_beyond_two_ghost_edge"
+    )
+
+
+def test_movie_cli_accepts_areal_inner_open_boundary(monkeypatch):
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "make_collapse_movies.py",
+            "--boundary-name",
+            "areal_inner_open",
+        ],
+    )
+
+    args = make_collapse_movies.parse_arguments()
+
+    assert args.boundary_name == "areal_inner_open"
+
+
+def test_movie_reads_areal_inner_open_boundary_from_summary(tmp_path):
+    run_summary = tmp_path / "run_summary.json"
+    run_summary.write_text(
+        json.dumps({"particle_boundary": "areal_inner_open"})
+    )
+
+    assert make_collapse_movies.particle_boundary_name(tmp_path) == (
+        "areal_inner_open"
+    )

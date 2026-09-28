@@ -5,3 +5,10 @@ outputs/*
 *.npz
 *.png
 *.mp4
+*.json
+*.csv
+*.txt
+*.pkl
+
+
+PKG-INFO

@@ -1,4 +1,4 @@
-"""Render two-stream field growth, energy composition, and spacetime state.
+"""Render two-stream growth, energy conservation, and spacetime state.
 
 The energy figure always includes the total-domain electric energy.  For the
 guarded spherical annulus, the default exponential fit uses the central
@@ -25,7 +25,7 @@ from matplotlib.animation import FFMpegWriter
 
 
 DEFAULT_OUTPUT_DIRECTORY = (
-    Path(__file__).resolve().parent / "outputs" / "z4c_two_stream"
+    Path(__file__).resolve().parent / "outputs" / "z4c_two_stream_neutral_streams"
 )
 PHASE_SPACE_PATTERN = re.compile(r"phase_space_step_(\d+)\.npz$")
 METRIC_PATTERN = re.compile(r"metric_step_(\d+)\.npz$")
@@ -66,7 +66,6 @@ METRIC_ARRAY_FIELDS = (
     "theta",
     "Gamma",
     "E_r",
-    "kretschmann_scalar",
     "areal_radius",
     "misner_sharp_mass",
     "matter_rho",
@@ -846,13 +845,13 @@ def make_metric_movie(
     plt.close(figure)
 
 
-def make_electric_kretschmann_movie(
+def make_electric_field_movie(
     frames: list[dict[str, object]],
     movie_path: Path,
     fps: int = 24,
     dpi: int = 120,
 ) -> None:
-    """Render the signed electric field and spacetime curvature invariant."""
+    """Render the signed radial electric field with fixed run-wide limits."""
 
     if not FFMpegWriter.isAvailable():
         raise RuntimeError(f"Matplotlib could not find ffmpeg for {movie_path.name}")
@@ -860,32 +859,14 @@ def make_electric_kretschmann_movie(
     radius = frames[0]["r"]
     radial_limits = _cell_centered_radial_limits(radius)
     electric_limit = _fixed_symmetric_limit([frame["E_r"] for frame in frames])
-    curvature_chunks = [frame["kretschmann_scalar"] for frame in frames]
-    curvature_limit = _fixed_symmetric_limit(curvature_chunks)
-    curvature_linthresh = max(curvature_limit / 1.05 * 1.0e-6, 1.0e-30)
 
-    figure, axes = plt.subplots(
-        2,
-        1,
-        figsize=(7.2, 6.8),
-        sharex=True,
-        constrained_layout=True,
-    )
-    electric_artist, = axes[0].plot(radius, frames[0]["E_r"], color="#e45756")
-    curvature_artist, = axes[1].plot(
-        radius,
-        frames[0]["kretschmann_scalar"],
-        color="#4c78a8",
-    )
-    axes[0].set_ylim(-electric_limit, electric_limit)
-    axes[0].set_ylabel(r"signed $E_r$")
-    axes[1].set_yscale("symlog", linthresh=curvature_linthresh)
-    axes[1].set_ylim(-curvature_limit, curvature_limit)
-    axes[1].set_ylabel(r"K = $R_{\mu\nu\rho\sigma}R^{\mu\nu\rho\sigma}$")
-    axes[1].set_xlabel(r"radial coordinate $r$")
-    for axis in axes:
-        axis.set_xlim(*radial_limits)
-        axis.grid(alpha=0.25)
+    figure, axis = plt.subplots(figsize=(7.2, 4.8), constrained_layout=True)
+    electric_artist, = axis.plot(radius, frames[0]["E_r"], color="#e45756")
+    axis.set_xlim(*radial_limits)
+    axis.set_ylim(-electric_limit, electric_limit)
+    axis.set_xlabel(r"radial coordinate $r$")
+    axis.set_ylabel(r"signed $E_r$")
+    axis.grid(alpha=0.25)
 
     title = figure.suptitle("")
     writer = FFMpegWriter(
@@ -897,13 +878,54 @@ def make_electric_kretschmann_movie(
     with writer.saving(figure, movie_path, dpi=dpi):
         for frame in frames:
             electric_artist.set_ydata(frame["E_r"])
-            curvature_artist.set_ydata(frame["kretschmann_scalar"])
             title.set_text(
-                "Electric field and Kretschmann scalar, "
+                "Radial electric field, "
                 f"step {frame['step']:06d}, t = {frame['time']:.6g}"
             )
             writer.grab_frame()
 
+    plt.close(figure)
+
+
+def make_misner_sharp_energy_plot(
+    time: np.ndarray,
+    misner_sharp_mass: np.ndarray,
+    plot_path: Path,
+    dpi: int = 180,
+) -> None:
+    """Plot outer-boundary Misner--Sharp energy and its fractional drift."""
+
+    initial_mass = misner_sharp_mass[0]
+    relative_drift = (misner_sharp_mass - initial_mass) / initial_mass
+    maximum_drift = float(np.max(np.abs(relative_drift)))
+
+    figure, axes = plt.subplots(
+        2,
+        1,
+        figsize=(7.4, 6.4),
+        sharex=True,
+        constrained_layout=True,
+    )
+    axes[0].plot(time, misner_sharp_mass, color="#4c78a8")
+    axes[0].set_ylabel(r"$M_{\rm MS}$")
+    axes[0].set_title("Outer-boundary Misner--Sharp energy conservation")
+
+    axes[1].plot(time, relative_drift, color="#e45756")
+    axes[1].axhline(0.0, color="black", linewidth=0.8, alpha=0.6)
+    axes[1].set_xlabel("time")
+    axes[1].set_ylabel(r"$[M_{\rm MS}(t)-M_{\rm MS}(0)]/M_{\rm MS}(0)$")
+    axes[1].text(
+        0.01,
+        0.95,
+        rf"max $|\Delta M_{{\rm MS}}/M_{{\rm MS}}(0)|={maximum_drift:.3e}$",
+        transform=axes[1].transAxes,
+        va="top",
+        fontsize="small",
+    )
+    for axis in axes:
+        axis.grid(alpha=0.25)
+
+    figure.savefig(plot_path, dpi=dpi)
     plt.close(figure)
 
 
@@ -1203,12 +1225,13 @@ def render_two_stream_diagnostics(
         raise ValueError("energy-composition diagnostics do not close")
 
     energy_plot_path = output_directory / "electric_field_energy.png"
+    misner_sharp_energy_path = output_directory / "misner_sharp_energy.png"
     energy_composition_path = output_directory / "energy_composition.png"
     growth_fit_path = output_directory / "growth_fit.json"
     movie_path = output_directory / "phase_space.mp4"
     metric_geometry_path = output_directory / "metric_geometry.mp4"
     extrinsic_z4c_path = output_directory / "extrinsic_z4c.mp4"
-    electric_kretschmann_path = output_directory / "electric_kretschmann.mp4"
+    electric_field_path = output_directory / "electric_field.mp4"
 
     energy_labels = {
         "electric_field_energy": r"total-domain $U_E$",
@@ -1239,6 +1262,12 @@ def render_two_stream_diagnostics(
         energy_composition_path,
         dpi=dpi,
     )
+    make_misner_sharp_energy_plot(
+        time,
+        misner_sharp_mass,
+        misner_sharp_energy_path,
+        dpi=dpi,
+    )
 
     radial_minimum, radial_maximum = radial_domain(parameters, phase_space_frames)
     make_phase_space_movie(
@@ -1265,21 +1294,22 @@ def render_two_stream_diagnostics(
         fps=fps,
         dpi=dpi,
     )
-    make_electric_kretschmann_movie(
+    make_electric_field_movie(
         metric_frames,
-        electric_kretschmann_path,
+        electric_field_path,
         fps=fps,
         dpi=dpi,
     )
 
     return {
         "energy_plot": energy_plot_path,
+        "misner_sharp_energy_plot": misner_sharp_energy_path,
         "energy_composition_plot": energy_composition_path,
         "growth_fit": growth_fit_path,
         "phase_space_movie": movie_path,
         "metric_geometry_movie": metric_geometry_path,
         "extrinsic_z4c_movie": extrinsic_z4c_path,
-        "electric_kretschmann_movie": electric_kretschmann_path,
+        "electric_field_movie": electric_field_path,
     }
 
 

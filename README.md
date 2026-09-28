@@ -13,6 +13,34 @@ radial metric solves and particle timestepping are imported from
 imported from `RadiShPICR.Z4C`.  `RadiShPICR.evolve` remains as a compatibility
 import for the constraint-based `step` and `step_rk4` routines.
 
+Particle shapes now live in `RadiShPICR.particles.shape_factors`; the former
+`particles.particle_shapes` module has been removed. Original shape and gather
+functions are in `shape_factors.cartesian_shapes`.
+
+```python
+from RadiShPICR.particles.shape_factors import (
+    particle_deposition_stencil,
+    metric_corrected_cic_stencil,
+    metric_corrected_quadratic_stencil,
+)
+
+indices, even_weights, odd_weights = particle_deposition_stencil(
+    particles, metric, inner_open=False,
+)
+```
+
+The stencil axis comes first and the particle axis second. Weights are
+dimensionless; deposition multiplies them by particle mass or charge and
+divides by proper shell volume. The production dispatcher preserves ordinary
+nearest and linear shapes and uses metric-corrected quadratic TSC. Call
+`metric_corrected_cic_stencil(particles, metric, inner_open=False)` explicitly
+for corrected CIC. Both corrected APIs select their shape independently of
+the species' shape setting and read the existing Z4C metric arrays directly.
+They support `jax.jit`, origin parity, and unrenormalized open-inner truncation.
+The positivity limiter preserves total raw stencil weight but can leave a
+uniform-density residual on steep metrics; the outermost shell is not matched
+by the correction recurrence.
+
 
 Features:
 - Z4C metric evolution.

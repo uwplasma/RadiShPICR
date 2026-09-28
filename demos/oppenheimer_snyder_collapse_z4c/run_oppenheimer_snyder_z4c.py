@@ -48,7 +48,7 @@ from RadiShPICR.Z4C.particle_boundaries import (
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.particles import particle_species
-from RadiShPICR.particles.particle_shapes import (
+from RadiShPICR.particles.shape_factors.cartesian_shapes import (
     _interpolate_cell_centered_fields_to_particles,
 )
 
@@ -63,16 +63,16 @@ rk4_step_jit = jax.jit(
 
 TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
-TARGET_SCHWARZSCHILD_TIME = 500 * TOTAL_STAR_MASS
+TARGET_SCHWARZSCHILD_TIME = 100 * TOTAL_STAR_MASS
 
 # The constrained demo uses 500 points over 20M.  Extending that spacing to
 # 100M gives 2495 Z4c cells and 2496 constrained-solve nodes.
 REFERENCE_R_MAX = 20.0
-REFERENCE_GRID_POINTS = 500
+REFERENCE_GRID_POINTS = 800
 R_MAX = 100.0
 NUM_Z4C_CELLS = 5 * (REFERENCE_GRID_POINTS - 1)
-PARTICLE_SHELL_COUNT = 250
-PARTICLES_PER_SHELL = 80
+PARTICLE_SHELL_COUNT = 300
+PARTICLES_PER_SHELL = 300
 
 CFL = 0.2
 FREE_FALL_FRACTION = 0.05
@@ -87,9 +87,10 @@ INNER_PARTICLE_ABSORPTION = (
     "zero_physical_overlap_or_beyond_two_ghost_edge"
 )
 
-KAPPA = 0.02
+KAPPA = 1.0
 ETA = 2.0
 NU = 0.02
+ZERO_SHIFT = 0  # 1 freezes the initial shift; 0 evolves it with Z4C.
 
 
 def surface_isotropic_radius(surface_areal_radius, total_mass):
@@ -764,6 +765,7 @@ def run_simulation(args):
         constrained_outer_X_r=float(initial_X_r),
         constrained_outer_X_t=float(initial_X_t),
         target_schwarzschild_time=float(args.target_time),
+        zero_shift=ZERO_SHIFT,
         particle_state_variables="r_ur",
         particle_boundary="areal_inner_open",
         particle_inner_ghost_cells=INNER_AREAL_GHOST_CELLS,
@@ -819,6 +821,7 @@ def run_simulation(args):
                     trial_dt,
                     EM_on=False,
                     GR_on=True,
+                    zero_shift=ZERO_SHIFT,
                     particle_boundary=deleting_inner_areal_radius_boundary,
                 )
 
@@ -919,6 +922,7 @@ def run_simulation(args):
         np.sum(np.asarray(particles.weight))
     )
     run_summary = {
+        "zero_shift": ZERO_SHIFT,
         "particle_boundary": "areal_inner_open",
         "particle_inner_ghost_cells": INNER_AREAL_GHOST_CELLS,
         "particle_deposition_boundary": INNER_PARTICLE_DEPOSITION,
