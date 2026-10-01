@@ -71,6 +71,7 @@ def test_package_respects_explicit_jax_x64_environment_setting():
 def test_radial_electric_solver_imports_without_relativity_metric_cycle():
     from RadiShPICR.ConstraintBasedRelativity import (
         calculate_metric,
+        integrate_metric_from_origin,
         step,
         step_rk4,
         step_rk4_with_metric,
@@ -80,6 +81,7 @@ def test_radial_electric_solver_imports_without_relativity_metric_cycle():
     assert callable(step_rk4)
     assert callable(step_rk4_with_metric)
     assert callable(calculate_metric)
+    assert callable(integrate_metric_from_origin)
 
 
 def test_formulation_local_evolution_imports_are_available():

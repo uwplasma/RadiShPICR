@@ -23,9 +23,6 @@ from RadiShPICR.Z4C.electric_field import (
     solve_radial_electric_field,
 )
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
-from RadiShPICR.Z4C.particle_boundaries import (
-    deleting_inner_areal_radius_boundary,
-)
 from RadiShPICR.Z4C.utils import (
     trace_free_curvature,
     unit_determinant_conformal_metric,
@@ -252,14 +249,9 @@ def _electrostatic_stage_state(
     inner_open,
 ):
     def electrostatic_state(_):
-        if inner_open:
-            charge_density = compute_radial_charge_density(
-                particles,
-                metric,
-                True,
-            )
-        else:
-            charge_density = compute_radial_charge_density(particles, metric)
+        charge_density = compute_radial_charge_density(
+            particles, metric, inner_open=inner_open,
+        )
         E_r = solve_radial_electric_field(
             metric,
             charge_density,
@@ -313,14 +305,9 @@ def _stage_derivatives(
     du_r_dt = du_r_dt + lorentz_force
 
     def dynamical_metric_derivative(_):
-        if inner_open:
-            particle_matter = compute_radial_matter_terms(
-                particles,
-                metric,
-                True,
-            )
-        else:
-            particle_matter = compute_radial_matter_terms(particles, metric)
+        particle_matter = compute_radial_matter_terms(
+            particles, metric, inner_open=inner_open,
+        )
         matter_terms = _add_matter_terms(particle_matter, field_matter)
         return metric_time_derivatives(metric, matter_terms, metric_boundary, zero_shift)
 
@@ -351,14 +338,9 @@ def _final_electrostatic_fields(
     inner_open,
 ):
     def electrostatic_fields(_):
-        if inner_open:
-            charge_density = compute_radial_charge_density(
-                particles,
-                metric,
-                True,
-            )
-        else:
-            charge_density = compute_radial_charge_density(particles, metric)
+        charge_density = compute_radial_charge_density(
+            particles, metric, inner_open=inner_open,
+        )
         E_r = solve_radial_electric_field(
             metric,
             charge_density,
@@ -387,6 +369,7 @@ def rk4_step(
     GR_on,
     epsilon_0=1.0,
     particle_boundary=None,
+    inner_open=False,
     metric_boundary=METRIC_BOUNDARY_SOMMERFELD,
     zero_shift=0,
 ):
@@ -400,6 +383,9 @@ def rk4_step(
     fields evolve when ``GR_on=True``.  It is also a runtime JAX flag.
     ``particle_boundary`` receives ``(stage_particles, stage_metric)`` before
     each stage derivative and once more after the final update.
+    ``inner_open=True`` independently selects unrenormalized open-inner matter
+    and charge deposition. Supply it with the inner-areal absorbing boundary,
+    including wrapped callbacks. It is a runtime JAX boolean.
     """
 
     metric = jax.lax.cond(
@@ -410,7 +396,6 @@ def rk4_step(
     )
     if particle_boundary is not None:
         particles = particle_boundary(particles, metric)
-    inner_open = particle_boundary is deleting_inner_areal_radius_boundary
 
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()

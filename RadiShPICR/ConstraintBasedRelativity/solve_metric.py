@@ -302,7 +302,7 @@ def heuns_method(U_state, dr, particles, grid):
     )
 
 
-def _integrate_metric_from_origin(
+def integrate_metric_from_origin(
     particles,
     grid,
     center_A,
@@ -442,6 +442,7 @@ def calculate_metric(
     particles,
     r_grid,
     dr,
+    *,
     previous_X_t=None,
     previous_X_r=None,
 ):
@@ -462,7 +463,7 @@ def calculate_metric(
         r_max=r_grid[-1],
     )
 
-    trial_U_state = _integrate_metric_from_origin(
+    trial_U_state = integrate_metric_from_origin(
         particles,
         grid,
         center_A=jnp.asarray(1.0, dtype=r_grid.dtype),
@@ -491,7 +492,7 @@ def calculate_metric(
     center_A = trial_A[0] / origin_X_r
     center_alpha = trial_alpha[0] / origin_X_t
 
-    return _integrate_metric_from_origin(
+    return integrate_metric_from_origin(
         particles,
         grid,
         center_A=center_A,

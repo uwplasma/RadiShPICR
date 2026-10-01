@@ -100,9 +100,10 @@ def solve_radial_electric_field(
 def compute_radial_lorentz_force(particles, metric: Z4C_Metric, E_r):
     """Return the electrostatic contribution to ``du_r / dt``.
 
-    Lapse and electric field use the same cell-centered compact stencil as
-    charge deposition.  The lapse has even origin parity and ``E_r`` has odd
-    parity, preserving deposit/gather consistency on the guarded domain.
+    Lapse and electric field use ordinary coordinate-space compact weights.
+    The lapse has even origin parity and ``E_r`` has odd parity. Quadratic
+    charge deposition uses metric-corrected weights, so its weights differ
+    from this gather even when both stencils have the same support.
     """
 
     radial_positions, _ = particles.get_positions()

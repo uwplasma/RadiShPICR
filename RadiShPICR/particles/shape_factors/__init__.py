@@ -6,8 +6,11 @@ metric_corrected_cic_stencil explicitly to use the new CIC correction.
 
 import jax.numpy as jnp
 
-from .cartesian_shapes import _unbounded_raw_radial_shape_stencil
-from .common import apply_stencil_boundaries, inner_areal_radius_index
+from .cartesian_shapes import (
+    _unbounded_raw_radial_shape_stencil,
+    apply_stencil_boundaries,
+)
+from .common import inner_areal_radius_index
 from .metric_corrected_cic import metric_corrected_cic_stencil
 from .metric_correct_quadratic import metric_corrected_quadratic_stencil
 

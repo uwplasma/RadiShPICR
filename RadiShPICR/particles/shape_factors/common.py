@@ -6,7 +6,10 @@ These routines read metric arrays directly and do not import Z4C modules.
 import jax
 import jax.numpy as jnp
 
-from .cartesian_shapes import _unbounded_raw_radial_shape_stencil
+from .cartesian_shapes import (
+    _unbounded_raw_radial_shape_stencil,
+    apply_stencil_boundaries,
+)
 
 
 def inner_areal_radius_index(metric):
@@ -14,28 +17,6 @@ def inner_areal_radius_index(metric):
 
     areal_radius = metric.r * jnp.sqrt(metric.conformal_gt / metric.chi)
     return jnp.argmin(areal_radius)
-
-
-def apply_stencil_boundaries(
-    raw_indices, raw_weights, num_cells, inner_open=False, inner_boundary_index=0,
-):
-    """Fold at the half-cell origin or discard open-boundary ghost shares.
-
-    No retained weights are renormalized. Odd radial quantities change sign
-    under origin reflection; open-inner weights carry their original sign.
-    """
-
-    reflected_indices = jnp.where(raw_indices < 0, -raw_indices - 1, raw_indices)
-    grid_indices = jnp.where(inner_open, raw_indices, reflected_indices)
-    first_index = jnp.where(inner_open, inner_boundary_index, 0)
-    physical = (grid_indices >= first_index) & (grid_indices < num_cells)
-
-    indices = jnp.clip(grid_indices, 0, num_cells - 1)
-    even_weights = jnp.where(physical, raw_weights, 0.0)
-    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
-    odd_weights = even_weights * jnp.where(inner_open, 1.0, reflection_sign)
-
-    return indices, even_weights, odd_weights
 
 
 def proper_radial_shell_volume(metric):

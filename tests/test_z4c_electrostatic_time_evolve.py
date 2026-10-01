@@ -44,7 +44,8 @@ def _particles(r=3.0, ur=0.2, charge=-1.0):
     )
 
 
-def test_electrostatic_step_recomputes_field_at_every_rk4_stage(monkeypatch):
+@pytest.mark.parametrize("inner_open", [False, True])
+def test_electrostatic_step_recomputes_field_at_every_rk4_stage(monkeypatch, inner_open):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
     metric = _flat_metric(num_cells=8, dr=0.5)
@@ -53,8 +54,8 @@ def test_electrostatic_step_recomputes_field_at_every_rk4_stage(monkeypatch):
     field_sources = []
     gathered_positions = []
 
-    def record_charge(stage_particles, stage_metric):
-        deposited_positions.append(stage_particles.r.copy())
+    def record_charge(stage_particles, stage_metric, inner_open=False):
+        deposited_positions.append((stage_particles.r.copy(), inner_open))
         return jnp.full_like(stage_metric.r, stage_particles.r[0])
 
     def record_field(stage_metric, charge_density, epsilon_0=1.0):
@@ -81,15 +82,17 @@ def test_electrostatic_step_recomputes_field_at_every_rk4_stage(monkeypatch):
             dt=0.2,
             EM_on=True,
             GR_on=False,
+            inner_open=inner_open,
         )
 
     assert len(deposited_positions) == 5
     assert len(field_sources) == 5
     assert len(gathered_positions) == 4
     assert jnp.allclose(
-        jnp.asarray(deposited_positions)[:, 0],
+        jnp.asarray([position for position, _ in deposited_positions])[:, 0],
         jnp.asarray([1.0, 1.1, 1.1, 1.2, 1.2]),
     )
+    assert [value for _, value in deposited_positions] == [inner_open] * 5
     assert jnp.allclose(
         jnp.asarray(gathered_positions)[:, 0],
         jnp.asarray([1.0, 1.1, 1.1, 1.2]),
@@ -225,3 +228,35 @@ def test_em_and_gr_add_field_stress_energy_at_matching_rk_stages(monkeypatch):
     assert jnp.allclose(updated_metric.alpha, metric.alpha + 0.1 * field_matter.rho)
     assert jnp.allclose(final_charge_density, charge_density)
     assert jnp.allclose(final_E_r, E_r)
+
+
+@pytest.mark.parametrize("GR_on", [False, True])
+def test_wrapped_absorbing_boundary_preserves_explicit_deposition_eager_and_jit(GR_on):
+    from RadiShPICR.Z4C import rk4_step, deleting_inner_areal_radius_boundary
+    from RadiShPICR.particles.shape_factors.common import proper_radial_shell_volume
+
+    metric = _flat_metric(num_cells=12, dr=1.0)
+    particles = _particles(r=0.1, ur=0.0, charge=1.0)
+
+    def wrapped_boundary(particles, metric):
+        return deleting_inner_areal_radius_boundary(particles, metric)
+
+    step = jax.jit(rk4_step, static_argnames=("particle_boundary",))
+    for inner_open in (False, True):
+        results = []
+        for callback in (deleting_inner_areal_radius_boundary, wrapped_boundary):
+            kwargs = dict(
+                EM_on=jnp.asarray(True), GR_on=jnp.asarray(GR_on),
+                inner_open=jnp.asarray(inner_open), particle_boundary=callback,
+            )
+            with jax.disable_jit():
+                eager = rk4_step(particles, metric, 0.0, **kwargs)
+            compiled = step(particles, metric, 0.0, **kwargs)
+            for actual, expected in zip(jax.tree.leaves(compiled), jax.tree.leaves(eager)):
+                assert jnp.allclose(actual, expected, rtol=1.e-12, atol=1.e-14)
+            results.append(compiled)
+
+        for actual, expected in zip(jax.tree.leaves(results[0]), jax.tree.leaves(results[1])):
+            assert jnp.array_equal(actual, expected)
+        deposited_charge = jnp.sum(results[0][2] * proper_radial_shell_volume(metric))
+        assert jnp.allclose(deposited_charge, 0.595 if inner_open else 1.0)

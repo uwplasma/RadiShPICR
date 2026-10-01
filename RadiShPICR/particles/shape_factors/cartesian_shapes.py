@@ -151,6 +151,28 @@ def _unbounded_raw_radial_shape_stencil(
     return raw_indices, raw_weights
 
 
+def apply_stencil_boundaries(
+    raw_indices, raw_weights, num_cells, inner_open=False, inner_boundary_index=0,
+):
+    """Fold at the half-cell origin or discard open-boundary ghost shares.
+
+    No retained weights are renormalized. Odd radial quantities change sign
+    under origin reflection; open-inner weights carry their original sign.
+    """
+
+    reflected_indices = jnp.where(raw_indices < 0, -raw_indices - 1, raw_indices)
+    grid_indices = jnp.where(inner_open, raw_indices, reflected_indices)
+    first_index = jnp.where(inner_open, inner_boundary_index, 0)
+    physical = (grid_indices >= first_index) & (grid_indices < num_cells)
+
+    indices = jnp.clip(grid_indices, 0, num_cells - 1)
+    even_weights = jnp.where(physical, raw_weights, 0.0)
+    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
+    odd_weights = even_weights * jnp.where(inner_open, 1.0, reflection_sign)
+
+    return indices, even_weights, odd_weights
+
+
 def _cell_centered_radial_shape_stencil(
     radial_positions,
     radial_grid,
@@ -166,17 +188,9 @@ def _cell_centered_radial_shape_stencil(
         shape_mode=shape_mode,
     )
 
-    reflected_indices = jnp.where(
-        raw_indices < 0,
-        -raw_indices - 1,
-        raw_indices,
+    indices, even_weights, odd_weights = apply_stencil_boundaries(
+        raw_indices, raw_weights, radial_grid.shape[0],
     )
-    valid = reflected_indices < radial_grid.shape[0]
-    indices = jnp.clip(reflected_indices, 0, radial_grid.shape[0] - 1)
-
-    even_weights = jnp.where(valid, raw_weights, 0.0)
-    reflection_sign = jnp.where(raw_indices < 0, -1.0, 1.0)
-    odd_weights = even_weights * reflection_sign
     if shape_mode == "nearest":
         # At the parity fixed point the two equally near half cells represent
         # opposite sides of the origin.  Even quantities retain unit weight;
@@ -213,15 +227,10 @@ def _cell_centered_open_inner_shape_stencil(
         shape_mode=shape_mode,
     )
 
-    last_grid_index = radial_grid.shape[0] - 1
-    physical = jnp.logical_and(
-        raw_indices >= inner_boundary_index,
-        raw_indices <= last_grid_index,
+    return apply_stencil_boundaries(
+        raw_indices, raw_weights, radial_grid.shape[0],
+        inner_open=True, inner_boundary_index=inner_boundary_index,
     )
-    indices = jnp.clip(raw_indices, 0, last_grid_index)
-    physical_weights = jnp.where(physical, raw_weights, 0.0)
-
-    return indices, physical_weights, physical_weights
 
 
 @partial(jax.jit, static_argnames=("shape_mode",))

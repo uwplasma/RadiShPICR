@@ -601,7 +601,7 @@ def test_rk4_step_projects_every_gr_metric_stage(monkeypatch):
 
         return particle_zeros, particle_zeros, particle_zeros, particle_zeros
 
-    def fake_compute_radial_matter_terms(stage_particles, stage_metric):
+    def fake_compute_radial_matter_terms(stage_particles, stage_metric, inner_open=False):
         metric_zeros = jnp.zeros_like(stage_metric.r)
 
         return MatterTerms(
@@ -677,7 +677,7 @@ def test_rk4_step_keeps_unrestricted_standard_particle_state(monkeypatch):
 
         return du_r_dt, du_phi_dt, dr_dt, dphi_dt
 
-    def fake_compute_radial_matter_terms(stage_particles, stage_metric):
+    def fake_compute_radial_matter_terms(stage_particles, stage_metric, inner_open=False):
         return MatterTerms(
             rho=jnp.zeros_like(stage_metric.r),
             Srr=jnp.zeros_like(stage_metric.r),
@@ -751,7 +751,7 @@ def test_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
 
         return du_r_dt, du_phi_dt, dr_dt, dphi_dt
 
-    def fake_compute_radial_matter_terms(stage_particles, stage_metric):
+    def fake_compute_radial_matter_terms(stage_particles, stage_metric, inner_open=False):
         matter_stage_positions.append(stage_particles.r.copy())
         rho = jnp.full_like(stage_metric.r, stage_particles.r[0])
 
@@ -889,7 +889,7 @@ def test_deleting_particle_boundary_is_irreversible_across_rk_stages(monkeypatch
     )
     stage_weights = []
 
-    def record_matter_weights(stage_particles, stage_metric):
+    def record_matter_weights(stage_particles, stage_metric, inner_open=False):
         stage_weights.append(stage_particles.weight.copy())
         return initialize_vacuum_matter_terms(stage_metric)
 
@@ -960,6 +960,7 @@ def test_zero_overlap_absorption_is_irreversible_across_rk_stages(monkeypatch):
             EM_on=False,
             GR_on=True,
             particle_boundary=deleting_inner_areal_radius_boundary,
+            inner_open=True,
         )
 
     assert jnp.allclose(
@@ -1172,8 +1173,10 @@ def test_particle_boundary_receives_matching_rk_stage_metric(monkeypatch):
     )
 
 
-def test_areal_inner_boundary_uses_open_matter_deposition_at_every_stage(
-    monkeypatch,
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("inner_open", [False, True])
+def test_areal_inner_boundary_uses_explicit_matter_deposition_at_every_stage(
+    monkeypatch, wrapped, inner_open,
 ):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
@@ -1217,6 +1220,10 @@ def test_areal_inner_boundary_uses_open_matter_deposition_at_every_stage(
         "metric_time_derivatives",
         zero_metric_derivative,
     )
+    def wrapped_boundary(stage_particles, stage_metric):
+        return deleting_inner_areal_radius_boundary(stage_particles, stage_metric)
+
+    callback = wrapped_boundary if wrapped else deleting_inner_areal_radius_boundary
     with jax.disable_jit():
         time_evolve.rk4_step(
             particles,
@@ -1224,7 +1231,8 @@ def test_areal_inner_boundary_uses_open_matter_deposition_at_every_stage(
             dt=0.2,
             EM_on=False,
             GR_on=True,
-            particle_boundary=deleting_inner_areal_radius_boundary,
+            particle_boundary=callback,
+            inner_open=inner_open,
         )
 
-    assert inner_open_values == [True, True, True, True]
+    assert inner_open_values == [inner_open] * 4

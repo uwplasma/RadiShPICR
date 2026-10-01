@@ -4,11 +4,12 @@ from jax.tree_util import register_pytree_node_class
 
 @register_pytree_node_class
 class particle_species:
-    """Particle species with positions and physical covariant momenta.
+    """Shared particle arrays with formulation-specific radial variables.
 
-    ``ur`` and ``uphi`` store the spatial covariant components ``u_r`` and
-    ``u_phi``.  They are not coordinate velocities or conformally lowered
-    momenta.
+    Z4C uses isotropic radius ``r`` and physical covariant momenta ``u_r``
+    and ``u_phi``. ConstraintBasedRelativity instead stores areal radius
+    ``r_s = A r`` in ``r`` and ``u_r / A`` in ``ur``. The container performs
+    no conversion; callers must use the convention of their formulation.
     """
 
     def __init__(self, name, charge, mass, weight, r, ur, phi, uphi, shape_mode):
@@ -27,7 +28,7 @@ class particle_species:
         return self.r, self.phi
     
     def get_velocities(self):
-        """Return the physical covariant spatial momenta ``(u_r, u_phi)``."""
+        """Return stored momenta: ``(u_r, u_phi)`` or constrained ``(u_r/A, u_phi)``."""
 
         return self.ur, self.uphi
     

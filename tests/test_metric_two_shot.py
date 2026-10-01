@@ -1,8 +1,14 @@
 import jax
 import jax.numpy as jnp
+import pytest
 
 import RadiShPICR.ConstraintBasedRelativity.solve_metric as solve_metric
 from RadiShPICR.particles import particle_species
+
+
+def test_previous_rescalings_are_keyword_only():
+    with pytest.raises(TypeError):
+        solve_metric.calculate_metric(None, None, None, 1.0, 1.0)
 
 
 def test_calculate_metric_uses_new_rescaling_when_X_t_increases(monkeypatch):
@@ -48,7 +54,7 @@ def test_calculate_metric_uses_new_rescaling_when_X_t_increases(monkeypatch):
 
     monkeypatch.setattr(
         solve_metric,
-        "_integrate_metric_from_origin",
+        "integrate_metric_from_origin",
         fake_heun_shot,
     )
     monkeypatch.setattr(
@@ -122,7 +128,7 @@ def test_calculate_metric_keeps_previous_rescaling_when_X_t_decreases(
 
     monkeypatch.setattr(
         solve_metric,
-        "_integrate_metric_from_origin",
+        "integrate_metric_from_origin",
         fake_heun_shot,
     )
     monkeypatch.setattr(

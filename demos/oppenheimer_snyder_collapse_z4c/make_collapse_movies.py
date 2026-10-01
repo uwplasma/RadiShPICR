@@ -17,10 +17,7 @@ from matplotlib.colors import LogNorm
 DEFAULT_OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent
     / "outputs"
-    / (
-        "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
-        "_nonnegative_density_conserving_tsc"
-    )
+    / "z4c_oppenheimer_snyder"
 )
 
 BSSN_VARIABLES = (

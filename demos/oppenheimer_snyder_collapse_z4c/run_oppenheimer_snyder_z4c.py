@@ -33,7 +33,7 @@ import jax.numpy as jnp
 
 from RadiShPICR.ConstraintBasedRelativity import (
     build_radial_grid,
-    calculate_metric,
+    integrate_metric_from_origin,
 )
 from RadiShPICR.ConstraintBasedRelativity.geodesic import isotropic_particle_radius
 from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
@@ -53,7 +53,7 @@ from RadiShPICR.particles.shape_factors.cartesian_shapes import (
 )
 
 
-calculate_metric_jit = jax.jit(calculate_metric)
+integrate_metric_jit = jax.jit(integrate_metric_from_origin)
 compute_radial_matter_terms_jit = jax.jit(compute_radial_matter_terms)
 rk4_step_jit = jax.jit(
     rk4_step,
@@ -65,9 +65,7 @@ TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
 TARGET_SCHWARZSCHILD_TIME = 100 * TOTAL_STAR_MASS
 
-# The constrained demo uses 500 points over 20M.  Extending that spacing to
-# 100M gives 2495 Z4c cells and 2496 constrained-solve nodes.
-REFERENCE_R_MAX = 20.0
+# Extend the 800-node spacing over 20M to 3995 Z4c cells over 100M.
 REFERENCE_GRID_POINTS = 800
 R_MAX = 100.0
 NUM_Z4C_CELLS = 5 * (REFERENCE_GRID_POINTS - 1)
@@ -78,11 +76,15 @@ CFL = 0.2
 FREE_FALL_FRACTION = 0.05
 MINIMUM_TRIAL_TIME_STEP = 1.0e-7
 SAVE_EVERY = 10
-SHOOTING_ITERATIONS = 2
+SHOOTING_TOLERANCE = 1.0e-10
+SHOOTING_MAX_ITERATIONS = 64
+SHOOTING_METHOD = "bracketed_bisection_with_lapse_normalization"
 INNER_PARTICLE_DEPOSITION = "unrenormalized_shape_overlap"
-PARTICLE_DEPOSITION_SCHEME = (
-    "ruyten_density_conserving_quadratic_nonnegative"
-)
+PARTICLE_DEPOSITION_SCHEMES = {
+    "nearest": "ordinary_nearest",
+    "linear": "ordinary_cic",
+    "quadratic": "ruyten_density_conserving_quadratic_nonnegative",
+}
 INNER_PARTICLE_ABSORPTION = (
     "zero_physical_overlap_or_beyond_two_ghost_edge"
 )
@@ -296,67 +298,78 @@ def initialize_oppenheimer_snyder_particles(
 
 def shoot_constrained_schwarzschild_initial_data(
     particles,
-    r_grid,
-    dr,
+    grid,
     total_mass,
     center_A_guess,
-    shooting_iterations,
+    shooting_tolerance=SHOOTING_TOLERANCE,
+    shooting_max_iterations=SHOOTING_MAX_ITERATIONS,
 ):
-    """Shoot center data until the constrained exterior needs no rescaling.
+    """Match the time-symmetric OS slice to the requested exterior mass.
 
-    Each spatial correction is followed by a nested lapse shoot.  Every trial
-    is a complete Heun (RK2) integration of the constrained radial equations.
-    The fixed point is ``X_r = X_t = 1``, so the returned state already uses
-    the Schwarzschild isotropic chart at the initial time.
+    The spatial equations do not depend on the lapse. Bisect the central A
+    with alpha(0)=1, then normalize the linear lapse equation in one final
+    Heun shot. The particle rest mass is not the exterior gravitational mass.
     """
 
-    center_A = jnp.asarray(center_A_guess, dtype=r_grid.dtype)
-    center_alpha = jnp.asarray(1.0, dtype=r_grid.dtype)
-
-    U_state = calculate_metric_jit(
-        particles,
-        r_grid,
-        dr,
-        center_A,
-        center_alpha,
-    )
-
-    for _ in range(shooting_iterations):
+    def shoot(center_A, center_alpha):
+        U_state = integrate_metric_jit(
+            particles, grid,
+            jnp.asarray(center_A, dtype=grid.r_full.dtype),
+            jnp.asarray(center_alpha, dtype=grid.r_full.dtype),
+        )
         A, _, alpha, _, _, _, _, radial_nodes = U_state
-        X_r, _ = vacuum_rescale_factors(
-            A[-1],
-            alpha[-1],
-            radial_nodes[-1],
-            total_mass,
-            0.0,
+        X_r, X_t = vacuum_rescale_factors(
+            A[-1], alpha[-1], radial_nodes[-1], total_mass, 0.0,
         )
-        center_A = center_A / X_r
-        U_state = calculate_metric_jit(
-            particles,
-            r_grid,
-            dr,
-            center_A,
-            center_alpha,
+        finite = all(
+            np.all(np.isfinite(np.asarray(field)))
+            for field in jax.tree.leaves(U_state)
+        )
+        if (
+            not finite
+            or not np.all(np.asarray(A) > 0.0)
+            or not np.all(np.asarray(alpha) > 0.0)
+            or not np.isfinite(float(X_r))
+            or not np.isfinite(float(X_t))
+            or float(X_t) <= 0.0
+        ):
+            raise RuntimeError("OS matching shot has nonfinite or nonpositive geometry.")
+        return U_state, float(X_r), float(X_t)
+
+    lower_A = 0.9 * center_A_guess
+    upper_A = 1.1 * center_A_guess
+    _, lower_X_r, _ = shoot(lower_A, 1.0)
+    _, upper_X_r, _ = shoot(upper_A, 1.0)
+    lower_residual = lower_X_r - 1.0
+    upper_residual = upper_X_r - 1.0
+    if lower_residual * upper_residual > 0.0:
+        raise RuntimeError(
+            "OS matching requires a sign-changing central-A bracket: "
+            f"residuals are {lower_residual:.6e}, {upper_residual:.6e}."
         )
 
-        for _ in range(shooting_iterations):
-            A, _, alpha, _, _, _, _, radial_nodes = U_state
-            _, X_t = vacuum_rescale_factors(
-                A[-1],
-                alpha[-1],
-                radial_nodes[-1],
-                total_mass,
-                0.0,
-            )
-            center_alpha = center_alpha / X_t
-            U_state = calculate_metric_jit(
-                particles,
-                r_grid,
-                dr,
-                center_A,
-                center_alpha,
-            )
+    for _ in range(shooting_max_iterations):
+        center_A = 0.5 * (lower_A + upper_A)
+        _, X_r, X_t = shoot(center_A, 1.0)
+        residual = X_r - 1.0
+        if abs(residual) <= shooting_tolerance:
+            break
+        if lower_residual * residual <= 0.0:
+            upper_A = center_A
+        else:
+            lower_A = center_A
+            lower_residual = residual
+    else:
+        raise RuntimeError(
+            f"OS spatial matching did not converge in {shooting_max_iterations} "
+            f"iterations (tolerance {shooting_tolerance:.3e})."
+        )
 
+    U_state, X_r, X_t = shoot(center_A, 1.0 / X_t)
+    if max(abs(X_r - 1.0), abs(X_t - 1.0)) > shooting_tolerance:
+        raise RuntimeError(
+            f"OS final matching failed: X_r={X_r:.12e}, X_t={X_t:.12e}."
+        )
     return U_state
 
 
@@ -369,12 +382,10 @@ def constrained_state_to_z4c(
 ):
     """Translate the matched, time-symmetric constrained slice to Z4c."""
 
-    A, phi, alpha, Krr, beta_over_r, Er, source_terms, r_nodes = U_state
-    del phi, Krr, Er, source_terms
+    A, _, alpha, _, _, _, _, r_nodes = U_state
 
     A = jnp.interp(z4c_r, r_nodes, A)
     alpha = jnp.interp(z4c_r, r_nodes, alpha)
-    beta = jnp.interp(z4c_r, r_nodes, beta_over_r * r_nodes)
 
     zeros = jnp.zeros_like(z4c_r)
     ones = jnp.ones_like(z4c_r)
@@ -398,20 +409,6 @@ def constrained_state_to_z4c(
         nu=jnp.asarray(nu, dtype=z4c_r.dtype),
         r=z4c_r,
         dr=z4c_r[1] - z4c_r[0],
-    )
-
-
-def copy_particles(particles):
-    return particle_species(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
-        weight=particles.weight,
-        r=jnp.array(particles.r),
-        ur=jnp.array(particles.ur),
-        phi=jnp.array(particles.phi),
-        uphi=jnp.array(particles.uphi),
-        shape_mode=particles.shape_mode,
     )
 
 
@@ -488,7 +485,8 @@ def build_initial_state(
     shape_mode="nearest",
     total_mass=TOTAL_STAR_MASS,
     surface_areal_radius=SURFACE_AREAL_RADIUS,
-    shooting_iterations=SHOOTING_ITERATIONS,
+    shooting_tolerance=SHOOTING_TOLERANCE,
+    shooting_max_iterations=SHOOTING_MAX_ITERATIONS,
 ):
     """Shoot a Schwarzschild-matched constrained OS slice and convert to Z4c."""
 
@@ -514,11 +512,11 @@ def build_initial_state(
 
     constrained_U_state = shoot_constrained_schwarzschild_initial_data(
         particles,
-        constrained_grid.r_full,
-        constrained_grid.dr,
+        constrained_grid,
         total_mass,
         initial_center_A(total_mass, surface_areal_radius),
-        shooting_iterations,
+        shooting_tolerance,
+        shooting_max_iterations,
     )
 
     constrained_r = constrained_U_state[-1]
@@ -553,6 +551,7 @@ def build_initial_state(
     )
 
 
+@jax.jit
 def state_is_acceptable(metric, particles):
     evolved_metric_fields = (
         metric.alpha,
@@ -566,30 +565,26 @@ def state_is_acceptable(metric, particles):
         metric.theta,
         metric.Gamma,
     )
-    finite_metric = all(
-        np.all(np.isfinite(np.asarray(field)))
-        for field in evolved_metric_fields
-    )
-    finite_particles = all(
-        np.all(np.isfinite(np.asarray(field)))
-        for field in (particles.r, particles.ur, particles.phi, particles.uphi)
-    )
+    finite_metric = jnp.all(jnp.isfinite(jnp.stack(evolved_metric_fields)))
+    finite_particles = jnp.all(jnp.isfinite(jnp.stack(
+        (particles.r, particles.ur, particles.phi, particles.uphi)
+    )))
 
     grr, gT = physical_spatial_metric(metric)
     positive_geometry = (
-        np.all(np.asarray(grr) > 0.0)
-        and np.all(np.asarray(gT) > 0.0)
-        and np.all(np.asarray(metric.alpha) > 0.0)
+        jnp.all(grr > 0.0)
+        & jnp.all(gT > 0.0)
+        & jnp.all(metric.alpha > 0.0)
     )
 
-    return finite_metric and finite_particles and positive_geometry
+    return finite_metric & finite_particles & positive_geometry
 
 
 def freefall_collapse_time_step(particles, metric):
     matter_terms = compute_radial_matter_terms_jit(
         particles,
         metric,
-        True,
+        inner_open=True,
     )
     rho_max = float(np.max(np.asarray(matter_terms.rho)))
     if rho_max <= 0.0:
@@ -637,7 +632,7 @@ def write_schwarzschild_snapshot(
     matter_terms = compute_radial_matter_terms_jit(
         diagnostic_particles,
         diagnostic_metric,
-        True,
+        inner_open=True,
     )
     grr, gT = physical_spatial_metric(diagnostic_metric)
     areal_radius = diagnostic_metric.r * jnp.sqrt(gT)
@@ -728,7 +723,8 @@ def run_simulation(args):
             num_z4c_cells=args.num_cells,
             particles_per_shell=args.particles_per_shell,
             shape_mode=args.shape_mode,
-            shooting_iterations=args.shooting_iterations,
+            shooting_tolerance=args.shooting_tolerance,
+            shooting_max_iterations=args.shooting_max_iterations,
         )
     )
 
@@ -759,7 +755,9 @@ def run_simulation(args):
         constrained_r=np.asarray(constrained_U_state[-1]),
         z4c_r=np.asarray(metric.r),
         initial_isotropy_error=initial_isotropy_error,
-        shooting_iterations=int(args.shooting_iterations),
+        shooting_method=SHOOTING_METHOD,
+        shooting_tolerance=args.shooting_tolerance,
+        shooting_max_iterations=args.shooting_max_iterations,
         center_A=float(constrained_U_state[0][0]),
         center_alpha=float(constrained_U_state[2][0]),
         constrained_outer_X_r=float(initial_X_r),
@@ -770,7 +768,7 @@ def run_simulation(args):
         particle_boundary="areal_inner_open",
         particle_inner_ghost_cells=INNER_AREAL_GHOST_CELLS,
         particle_deposition_boundary=INNER_PARTICLE_DEPOSITION,
-        particle_deposition_scheme=PARTICLE_DEPOSITION_SCHEME,
+        particle_deposition_scheme=PARTICLE_DEPOSITION_SCHEMES[args.shape_mode],
         particle_absorption_rule=INNER_PARTICLE_ABSORPTION,
         shape_mode=args.shape_mode,
     )
@@ -814,15 +812,15 @@ def run_simulation(args):
             endpoint_trial = trial_dt < args.minimum_dt
             while trial_dt >= args.minimum_dt or endpoint_trial:
                 endpoint_trial = False
-                trial_particles = copy_particles(particles)
                 trial_particles, trial_metric, _, _ = rk4_step_jit(
-                    trial_particles,
+                    particles,
                     metric,
                     trial_dt,
                     EM_on=False,
                     GR_on=True,
                     zero_shift=ZERO_SHIFT,
                     particle_boundary=deleting_inner_areal_radius_boundary,
+                    inner_open=True,
                 )
 
                 if not state_is_acceptable(trial_metric, trial_particles):
@@ -926,7 +924,12 @@ def run_simulation(args):
         "particle_boundary": "areal_inner_open",
         "particle_inner_ghost_cells": INNER_AREAL_GHOST_CELLS,
         "particle_deposition_boundary": INNER_PARTICLE_DEPOSITION,
-        "particle_deposition_scheme": PARTICLE_DEPOSITION_SCHEME,
+        "particle_deposition_scheme": PARTICLE_DEPOSITION_SCHEMES[args.shape_mode],
+        "shooting_method": SHOOTING_METHOD,
+        "shooting_tolerance": args.shooting_tolerance,
+        "shooting_max_iterations": args.shooting_max_iterations,
+        "constrained_outer_X_r": float(initial_X_r),
+        "constrained_outer_X_t": float(initial_X_t),
         "particle_absorption_rule": INNER_PARTICLE_ABSORPTION,
         "shape_mode": args.shape_mode,
         "completed": bool(completed),
@@ -957,10 +960,7 @@ def parse_arguments():
     output_directory = (
         Path(__file__).resolve().parent
         / "outputs"
-        / (
-            "z4c_oppenheimer_snyder_areal_inner_open_2ghost_tsc_zero_overlap"
-            "_nonnegative_density_conserving_tsc"
-        )
+        / "z4c_oppenheimer_snyder"
     )
 
     parser = argparse.ArgumentParser()
@@ -989,10 +989,16 @@ def parse_arguments():
     )
     parser.add_argument("--save-every", type=int, default=SAVE_EVERY)
     parser.add_argument(
-        "--shooting-iterations",
+        "--shooting-tolerance",
+        type=float,
+        default=SHOOTING_TOLERANCE,
+        help="maximum initial Schwarzschild matching error in X_r and X_t",
+    )
+    parser.add_argument(
+        "--shooting-max-iterations",
         type=int,
-        default=SHOOTING_ITERATIONS,
-        help="nested spatial and lapse RK2 shoots used for the t=0 slice",
+        default=SHOOTING_MAX_ITERATIONS,
+        help="maximum spatial bisection iterations for the initial slice",
     )
     parser.add_argument("--max-steps", type=int)
     parser.add_argument(
@@ -1003,8 +1009,10 @@ def parse_arguments():
 
     args = parser.parse_args()
     args.save_every = max(1, args.save_every)
-    if args.shooting_iterations < 1:
-        parser.error("--shooting-iterations must be at least 1")
+    if not math.isfinite(args.shooting_tolerance) or args.shooting_tolerance <= 0.0:
+        parser.error("--shooting-tolerance must be finite and positive")
+    if args.shooting_max_iterations < 1:
+        parser.error("--shooting-max-iterations must be at least 1")
     return args
 
 

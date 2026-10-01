@@ -13,6 +13,44 @@ radial metric solves and particle timestepping are imported from
 imported from `RadiShPICR.Z4C`.  `RadiShPICR.evolve` remains as a compatibility
 import for the constraint-based `step` and `step_rk4` routines.
 
+The shared particle container stores different radial variables in each
+formulation: Z4C uses isotropic `r` and covariant `u_r`, while constrained
+relativity stores `r_s = A r` and `u_r / A` in the same `r` and `ur` fields.
+Conversions belong at formulation boundaries; the container does not convert.
+
+Z4C particle deletion and deposition are configured explicitly:
+
+```python
+from RadiShPICR.Z4C import rk4_step, deleting_inner_areal_radius_boundary
+
+particles, metric, charge_density, E_r = rk4_step(
+    particles, metric, dt, EM_on=False, GR_on=True,
+    particle_boundary=deleting_inner_areal_radius_boundary,
+    inner_open=True,
+)
+```
+
+Pass `inner_open=True` for open-inner deposition, including when the callback
+is wrapped. Callback identity no longer selects deposition. `inner_open`,
+`EM_on`, `GR_on`, and `zero_shift` remain runtime JAX flags; the callback is a
+static argument when compiling the stepper. Ordinary parity deposition remains
+the default. Quadratic deposition is metric-corrected, while field gathering
+retains ordinary coordinate-space weights.
+
+The OS Z4C runner and movie renderer default to `outputs/z4c_oppenheimer_snyder`
+inside their demo directory. Explicit historical run directories remain usable.
+Initial data now use a bracketed spatial Heun shooting solve and one lapse
+normalization against the requested exterior mass. `--shooting-tolerance`
+(default `1e-10`) and `--shooting-max-iterations` (default `64`) replace
+`--shooting-iterations`. Unmatched initial data cause an explicit failure.
+`integrate_metric_from_origin` exposes a single Heun shot; `calculate_metric`
+retains its evolution-time two-shot algorithm and requires `previous_X_t` and
+`previous_X_r` by keyword.
+
+The campaign-specific two-stream review script is retained under
+`demos/relativistic_two_stream/archive/20260908/`, with its input assumptions
+documented there.
+
 Particle shapes now live in `RadiShPICR.particles.shape_factors`; the former
 `particles.particle_shapes` module has been removed. Original shape and gather
 functions are in `shape_factors.cartesian_shapes`.

@@ -1,9 +1,11 @@
 """Metric-corrected quadratic TSC on the spherical cell-centered grid."""
 
-from .cartesian_shapes import _unbounded_raw_radial_shape_stencil
+from .cartesian_shapes import (
+    _unbounded_raw_radial_shape_stencil,
+    apply_stencil_boundaries,
+)
 from .common import (
     apply_metric_transfer,
-    apply_stencil_boundaries,
     inner_areal_radius_index,
     metric_correction_coefficients,
 )
