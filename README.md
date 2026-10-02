@@ -94,10 +94,10 @@ Features:
   boundaries for spherical Z4C evolution; Sommerfeld remains the default.
 
 Demos:
-- [ ] Single puncture black hole in Z4C.
-- [ ] Oppenheimer-Snyder collapse in constraint-based relativity.
+- [X] Single puncture black hole in Z4C.
+- [X] Oppenheimer-Snyder collapse in constraint-based relativity.
 - [ ] Charged stellar collapse in constraint-based relativity.
-- [X] Relativistic two-stream instability with fixed-background and dynamical
+- [ ] Relativistic two-stream instability with fixed-background and dynamical
   Z4C evolution from the same time-symmetric Hamiltonian-constraint solve,
   source-aware Misner--Sharp diagnostics, synchronized metric movies, and
   signed energy composition plots.
