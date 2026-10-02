@@ -4,7 +4,20 @@ from RadiShPICR.ConstraintBasedRelativity.geodesic import compute_geodesic_terms
 from RadiShPICR.ConstraintBasedRelativity.lorentz_force import compute_lorentz_terms
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import calculate_metric
 
+
+def _reflect_origin(rs, ur_over_A):
+    """Fold signed radial coordinates and return their physical orientation."""
+
+    incoming_at_center = (rs == 0.0) & (ur_over_A < 0.0)
+    radial_sign = jnp.where((rs < 0.0) | incoming_at_center, -1.0, 1.0)
+
+    return jnp.abs(rs), radial_sign * ur_over_A, radial_sign
+
+
 def step(particles, r_grid, dr, dt):
+    """Advance one Euler step, reflecting r_s and u_r/A at the origin."""
+
+    particles.r, particles.ur, _ = _reflect_origin(particles.r, particles.ur)
     drs_dt, dphi_dt, dur_over_A_dt = _particle_derivatives(
         particles,
         r_grid,
@@ -14,6 +27,7 @@ def step(particles, r_grid, dr, dt):
     particles.r = particles.r + drs_dt * dt
     particles.ur = particles.ur + dur_over_A_dt * dt
     particles.phi = particles.phi + dphi_dt * dt
+    particles.r, particles.ur, _ = _reflect_origin(particles.r, particles.ur)
 
     return particles
 
@@ -42,6 +56,10 @@ def _particle_derivatives(
     previous_X_t=None,
     previous_X_r=None,
 ):
+    # Sources and forces use physical r_s >= 0 and reflected momentum.
+    # Keep the caller's signed stage arrays intact for the RK4 tableau.
+    rs, ur_over_A, radial_sign = _reflect_origin(particles.r, particles.ur)
+    particles = _copy_particle_state(particles, rs, particles.phi, ur_over_A)
 
     if U_state is None:
         if previous_X_t is None:
@@ -56,14 +74,21 @@ def _particle_derivatives(
             )
 
     dur_dt_EM = compute_lorentz_terms(particles, U_state)
-    return compute_geodesic_terms(
+    drs_dt, dphi_dt, dur_over_A_dt = compute_geodesic_terms(
         particles,
         U_state,
         dur_dt_EM=dur_dt_EM,
     )
 
+    # Both radial derivatives must return to the same signed coordinate
+    # system before combining stages that lie on opposite sides of the center.
+    return radial_sign * drs_dt, dphi_dt, radial_sign * dur_over_A_dt
+
 
 def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
+    # RK stages retain signed radial coordinates; _particle_derivatives folds
+    # only the physical state used for each metric solve and force evaluation.
+    particles.r, particles.ur, _ = _reflect_origin(particles.r, particles.ur)
     rs0 = particles.r
     ur_over_A0 = particles.ur
     phi0 = particles.phi
@@ -139,16 +164,19 @@ def _step_rk4_particle_update(particles, r_grid, dr, dt, initial_U_state=None):
         + k4_ur_over_A
     )
     particles.uphi = uphi0
+    particles.r, particles.ur, _ = _reflect_origin(particles.r, particles.ur)
 
     return particles
 
 
 def step_rk4(particles, r_grid, dr, dt):
+    """Advance one RK4 step with origin reflection in signed radial coordinates."""
+
     return _step_rk4_particle_update(particles, r_grid, dr, dt)
 
 
 def step_rk4_with_metric(particles, U_state, r_grid, dr, dt):
-    """Advance particles and return the metric of the completed RK4 state."""
+    """Advance particles and return the metric of the reflected final state."""
 
     particles = _step_rk4_particle_update(
         particles,

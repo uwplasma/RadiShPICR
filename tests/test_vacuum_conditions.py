@@ -102,6 +102,22 @@ def test_reissner_nordstrom_fields_satisfy_electrovac_radial_equations():
     assert jnp.allclose(residuals, 0.0, rtol=2.0e-4, atol=2.0e-6)
 
 
+def test_charged_lapse_derivative_at_strong_spatial_metric():
+    mass, charge = 1.0, 2.0
+    r = jnp.asarray(1.0)
+    A = reissner_nordstrom_A(r, mass, charge)
+    alpha = reissner_nordstrom_lapse(r, mass, charge)
+    phi = jax.grad(lambda r: jnp.sqrt(reissner_nordstrom_A(r, mass, charge)))(r)
+    Er = charge / (4.0 * jnp.pi * A * r**2)
+    zero = jnp.asarray(0.0)
+    U_state = (A, phi, alpha, zero, zero, Er, (zero, zero, zero, zero), r)
+    expected = jax.grad(reissner_nordstrom_lapse)(r, mass, charge)
+
+    assert jnp.allclose(expected, 0.3931685935003216, rtol=0.0, atol=1.0e-14)
+    assert jnp.allclose(dr_alpha(U_state), expected, rtol=0.0, atol=1.0e-14)
+    assert jnp.allclose(jax.jit(dr_alpha)(U_state), expected, rtol=0.0, atol=1.0e-14)
+
+
 def test_reissner_nordstrom_helpers_reduce_to_schwarzschild_without_charge():
     r = jnp.asarray(5.0)
     mass = jnp.asarray(1.25)

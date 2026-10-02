@@ -57,8 +57,9 @@ def dr_sqrt_phi(U_state, dr=None):
 def dr_alpha(U_state, dr=None):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
     rho, charge_density, Srr, Sr = source_terms
-    total_Srr = Srr - 0.5 * Er**2 / A**2
-    # account for the fact that Er is the covariant radial field, so E_i E^i = Er^2 / A^2.
+    # Covariant radial stress is -Er**2/2; only the scalar energy density
+    # contracts the electric field with gamma^rr = 1/A**2.
+    total_Srr = Srr - 0.5 * Er**2
 
     first_term = 4.0 * jnp.pi * alpha * total_Srr * r * A
     second_term = -2.0 * alpha * phi * jnp.sqrt(A)

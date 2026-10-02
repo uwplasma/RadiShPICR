@@ -242,7 +242,7 @@ def test_electromagnetic_sources_use_covariant_radial_field():
         - 2.0 * phi / r
     )
 
-    total_Srr = particle_Srr - 0.5 * Er**2 / A**2
+    total_Srr = particle_Srr - 0.5 * Er**2
     expected_dalpha_dr = (
         4.0 * jnp.pi * alpha * total_Srr * r * A
         - 2.0 * alpha * phi * jnp.sqrt(A)
@@ -528,8 +528,12 @@ def test_particle_derivatives_keep_stored_lapse_freezing_variables(monkeypatch):
     assert jnp.allclose(dr_dt, expected_dr_dt)
     assert jnp.allclose(dphi_dt, expected_dphi_dt)
     assert jnp.allclose(dur_dt, expected_dur_dt)
-    assert metric_particles == [particles]
-    assert force_particles == [particles]
+    assert len(metric_particles) == len(force_particles) == 1
+    assert metric_particles[0] is force_particles[0]
+    for actual, expected in zip(
+        jax.tree.leaves(metric_particles[0]), jax.tree.leaves(particles),
+    ):
+        assert jnp.array_equal(actual, expected)
     assert jnp.allclose(electromagnetic_terms[0], 1.0)
     assert jnp.allclose(particles.r, original_r)
     assert jnp.allclose(particles.ur, original_ur)
@@ -835,7 +839,7 @@ def test_step_reflects_lapse_freezing_state_after_center_crossing(monkeypatch):
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
         return (
-            -jnp.ones_like(stage_particles.r),
+            stage_particles.ur,
             jnp.zeros_like(stage_particles.phi),
             jnp.zeros_like(stage_particles.ur),
         )
@@ -1213,7 +1217,7 @@ def test_step_rk4_reflects_center_crossing_before_stage_metric_solves(monkeypatc
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
         return (
-            -jnp.ones_like(stage_particles.r),
+            stage_particles.ur,
             jnp.zeros_like(stage_particles.phi),
             jnp.zeros_like(stage_particles.ur),
         )
@@ -1269,7 +1273,7 @@ def test_step_rk4_does_not_freeze_zero_uphi_particle_at_center(monkeypatch):
 
     def fake_geodesic_terms(stage_particles, U_state, dur_dt_EM=None):
         return (
-            jnp.ones_like(stage_particles.r),
+            jnp.sign(stage_particles.ur),
             jnp.zeros_like(stage_particles.phi),
             jnp.ones_like(stage_particles.ur),
         )
