@@ -7,6 +7,7 @@ from RadiShPICR.Z4C.boundary_conditions import (
     apply_constraint_preserving_boundary,
 )
 from RadiShPICR.Z4C.constraint_terms import dGammadt, dthetadt
+from RadiShPICR.Z4C.current import compute_radial_current_density
 from RadiShPICR.Z4C.extrinsic_curvature import dArrdt, dAtdt, dKhdt
 from RadiShPICR.Z4C.shift_and_lapse import dalphadt, dbetadt
 from RadiShPICR.Z4C.spatial_metric import dchidt, dgrrdt, dgtdt
@@ -20,7 +21,7 @@ from RadiShPICR.Z4C.electric_field import (
     compute_electrostatic_matter_terms,
     compute_radial_charge_density,
     compute_radial_lorentz_force,
-    solve_radial_electric_field,
+    radial_electric_field_time_derivative,
 )
 from RadiShPICR.Z4C.geodesic import compute_geodesic_terms
 from RadiShPICR.Z4C.utils import (
@@ -244,18 +245,15 @@ def _add_matter_terms(particle_matter, field_matter):
 def _electrostatic_stage_state(
     particles,
     metric,
+    E_r,
+    dr_dt,
     epsilon_0,
     EM_on,
     inner_open,
 ):
     def electrostatic_state(_):
-        charge_density = compute_radial_charge_density(
-            particles, metric, inner_open=inner_open,
-        )
-        E_r = solve_radial_electric_field(
-            metric,
-            charge_density,
-            epsilon_0=epsilon_0,
+        current_density = compute_radial_current_density(
+            particles, metric, dr_dt, inner_open=inner_open,
         )
         lorentz_force = compute_radial_lorentz_force(particles, metric, E_r)
         field_matter = compute_electrostatic_matter_terms(
@@ -264,14 +262,14 @@ def _electrostatic_stage_state(
             epsilon_0=epsilon_0,
         )
 
-        return charge_density, E_r, lorentz_force, field_matter
+        return current_density, lorentz_force, field_matter
 
     def zero_electrostatic_state(_):
         zeros_grid = jnp.zeros_like(metric.r)
         zeros_particles = jnp.zeros_like(particles.r)
         field_matter = initialize_vacuum_matter_terms(metric)
 
-        return zeros_grid, zeros_grid, zeros_particles, field_matter
+        return zeros_grid, zeros_particles, field_matter
 
     return jax.lax.cond(
         EM_on,
@@ -284,6 +282,7 @@ def _electrostatic_stage_state(
 def _stage_derivatives(
     particles,
     metric,
+    E_r,
     epsilon_0,
     EM_on,
     GR_on,
@@ -291,16 +290,18 @@ def _stage_derivatives(
     inner_open,
     zero_shift,
 ):
-    _, _, lorentz_force, field_matter = _electrostatic_stage_state(
-        particles,
-        metric,
-        epsilon_0,
-        EM_on,
-        inner_open,
-    )
     du_r_dt, du_phi_dt, dr_dt, dphi_dt = compute_geodesic_terms(
         particles,
         metric,
+    )
+    current_density, lorentz_force, field_matter = _electrostatic_stage_state(
+        particles,
+        metric,
+        E_r,
+        dr_dt,
+        epsilon_0,
+        EM_on,
+        inner_open,
     )
     du_r_dt = du_r_dt + lorentz_force
 
@@ -318,7 +319,16 @@ def _stage_derivatives(
         operand=None,
     )
 
-    return metric_derivative, du_r_dt, du_phi_dt, dr_dt, dphi_dt
+    dE_r_dt = jax.lax.cond(
+        EM_on,
+        lambda _: radial_electric_field_time_derivative(
+            metric, metric_derivative, E_r, current_density, epsilon_0,
+        ),
+        lambda _: jnp.zeros_like(E_r),
+        operand=None,
+    )
+
+    return metric_derivative, du_r_dt, du_phi_dt, dr_dt, dphi_dt, dE_r_dt
 
 
 def _metric_stage(metric, derivative, scale, GR_on):
@@ -330,41 +340,12 @@ def _metric_stage(metric, derivative, scale, GR_on):
     )
 
 
-def _final_electrostatic_fields(
-    particles,
-    metric,
-    epsilon_0,
-    EM_on,
-    inner_open,
-):
-    def electrostatic_fields(_):
-        charge_density = compute_radial_charge_density(
-            particles, metric, inner_open=inner_open,
-        )
-        E_r = solve_radial_electric_field(
-            metric,
-            charge_density,
-            epsilon_0=epsilon_0,
-        )
-        return charge_density, E_r
-
-    def zero_fields(_):
-        zeros = jnp.zeros_like(metric.r)
-        return zeros, zeros
-
-    return jax.lax.cond(
-        EM_on,
-        electrostatic_fields,
-        zero_fields,
-        operand=None,
-    )
-
-
 def rk4_step(
     particles,
     metric: Z4C_Metric,
     dt,
     *,
+    E_r,
     EM_on,
     GR_on,
     epsilon_0=1.0,
@@ -376,16 +357,22 @@ def rk4_step(
     """Advance particles, electrostatics, and Z4C with one RK4 tableau.
 
     ``EM_on`` and ``GR_on`` are runtime JAX booleans.  Electromagnetic and
-    gravitational sources are recomputed from matching particle and metric
-    states at every RK stage.  With ``GR_on=False`` the supplied metric is
+    gravitational sources use matching particle, field, and metric states
+    at every RK stage. With ``GR_on=False`` the supplied metric is
     used as a static background without algebraic projection.
     ``zero_shift=1`` freezes only the supplied beta profile while the other
     fields evolve when ``GR_on=True``.  It is also a runtime JAX flag.
     ``particle_boundary`` receives ``(stage_particles, stage_metric)`` before
     each stage derivative and once more after the final update.
-    ``inner_open=True`` independently selects unrenormalized open-inner matter
-    and charge deposition. Supply it with the inner-areal absorbing boundary,
+    ``inner_open=True`` selects unrenormalized open-inner matter, charge,
+    and current deposition. Supply it with the inner-areal absorbing boundary,
     including wrapped callbacks. It is a runtime JAX boolean.
+
+    ``E_r`` is the covariant field carried from the previous step. Initialize
+    it once with Gauss law, then integrate its current-driven RHS here.
+    Return ``(particles, metric, charge_density, E_r)``; the final charge
+    density is diagnostic only. Absorption deletes particle sources without
+    erasing their field, and direct current deposition permits Gauss drift.
     """
 
     metric = jax.lax.cond(
@@ -399,10 +386,14 @@ def rk4_step(
 
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()
+    E_r = jax.lax.cond(
+        EM_on, lambda _: E_r, lambda _: jnp.zeros_like(E_r), operand=None,
+    )
 
     k1 = _stage_derivatives(
         particles,
         metric,
+        E_r,
         epsilon_0,
         EM_on,
         GR_on,
@@ -410,9 +401,10 @@ def rk4_step(
         inner_open,
         zero_shift,
     )
-    k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt = k1
+    k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt, k1_dE_r_dt = k1
 
     metric_k2 = _metric_stage(metric, k1_metric, 0.5 * dt, GR_on)
+    E_r_k2 = E_r + 0.5 * dt * k1_dE_r_dt
     particles_k2 = _copy_particle_state(
         particles,
         r0 + 0.5 * dt * k1_dr_dt,
@@ -425,6 +417,7 @@ def rk4_step(
     k2 = _stage_derivatives(
         particles_k2,
         metric_k2,
+        E_r_k2,
         epsilon_0,
         EM_on,
         GR_on,
@@ -432,9 +425,10 @@ def rk4_step(
         inner_open,
         zero_shift,
     )
-    k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt = k2
+    k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt, k2_dE_r_dt = k2
 
     metric_k3 = _metric_stage(metric, k2_metric, 0.5 * dt, GR_on)
+    E_r_k3 = E_r + 0.5 * dt * k2_dE_r_dt
     particles_k3 = _copy_particle_state(
         particles,
         r0 + 0.5 * dt * k2_dr_dt,
@@ -448,6 +442,7 @@ def rk4_step(
     k3 = _stage_derivatives(
         particles_k3,
         metric_k3,
+        E_r_k3,
         epsilon_0,
         EM_on,
         GR_on,
@@ -455,9 +450,10 @@ def rk4_step(
         inner_open,
         zero_shift,
     )
-    k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt = k3
+    k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt, k3_dE_r_dt = k3
 
     metric_k4 = _metric_stage(metric, k3_metric, dt, GR_on)
+    E_r_k4 = E_r + dt * k3_dE_r_dt
     particles_k4 = _copy_particle_state(
         particles,
         r0 + dt * k3_dr_dt,
@@ -471,6 +467,7 @@ def rk4_step(
     k4 = _stage_derivatives(
         particles_k4,
         metric_k4,
+        E_r_k4,
         epsilon_0,
         EM_on,
         GR_on,
@@ -478,7 +475,7 @@ def rk4_step(
         inner_open,
         zero_shift,
     )
-    k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt = k4
+    k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt, k4_dE_r_dt = k4
 
     weighted_metric_derivative = _combine_rk4_derivatives(
         k1_metric,
@@ -521,15 +518,19 @@ def rk4_step(
     if particle_boundary is not None:
         final_particles = particle_boundary(final_particles, final_metric)
 
-    charge_density, E_r = _final_electrostatic_fields(
-        final_particles,
-        final_metric,
-        epsilon_0,
+    final_E_r = E_r + (dt / 6.0) * (
+        k1_dE_r_dt + 2.0 * k2_dE_r_dt + 2.0 * k3_dE_r_dt + k4_dE_r_dt
+    )
+    charge_density = jax.lax.cond(
         EM_on,
-        inner_open,
+        lambda _: compute_radial_charge_density(
+            final_particles, final_metric, inner_open=inner_open,
+        ),
+        lambda _: jnp.zeros_like(final_metric.r),
+        operand=None,
     )
 
-    return final_particles, final_metric, charge_density, E_r
+    return final_particles, final_metric, charge_density, final_E_r
 
 
 def advance_vacuum_steps(

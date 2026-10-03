@@ -177,7 +177,7 @@ def test_constraint_preserving_selector_compiles_through_public_steppers():
         particles,
         metric,
         1.0e-3,
-        EM_on=False,
+        E_r=jnp.zeros_like(metric.r), EM_on=False,
         GR_on=True,
         metric_boundary=METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
     )

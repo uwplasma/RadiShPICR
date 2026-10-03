@@ -21,10 +21,17 @@ Conversions belong at formulation boundaries; the container does not convert.
 Z4C particle deletion and deposition are configured explicitly:
 
 ```python
-from RadiShPICR.Z4C import rk4_step, deleting_inner_areal_radius_boundary
+from RadiShPICR.Z4C import (
+    rk4_step, deleting_inner_areal_radius_boundary,
+    compute_radial_charge_density, solve_radial_electric_field,
+)
+
+# Initialize once. Carry the returned E_r into every subsequent step.
+charge_density = compute_radial_charge_density(particles, metric, inner_open=True)
+E_r = solve_radial_electric_field(metric, charge_density)
 
 particles, metric, charge_density, E_r = rk4_step(
-    particles, metric, dt, EM_on=False, GR_on=True,
+    particles, metric, dt, E_r=E_r, EM_on=True, GR_on=True,
     particle_boundary=deleting_inner_areal_radius_boundary,
     inner_open=True,
 )
@@ -36,6 +43,24 @@ is wrapped. Callback identity no longer selects deposition. `inner_open`,
 static argument when compiling the stepper. Ordinary parity deposition remains
 the default. Quadratic deposition is metric-corrected, while field gathering
 retains ordinary coordinate-space weights.
+
+`E_r` is a required keyword containing the cell-centered covariant electric
+field. Supply a zero grid array for EM-off runs. The stepper advances E_r with
+the same RK4 tableau as particles and the metric; it never solves Gauss' law.
+`compute_radial_current_density(particles, metric, dr_dt, inner_open=False)`
+deposits coordinate transport current, `alpha * J_Eulerian^r - beta * rho_q`,
+using the stage's coordinate velocity (not stored covariant momentum).
+`radial_electric_field_time_derivative` includes the geometric terms from the
+actual metric RHS, which vanish on a fixed background.
+
+Direct current deposition does not enforce discrete charge conservation.
+`radial_gauss_residual(metric, E_r, charge_density, epsilon_0=1.0)` measures
+`epsilon_0 * D_i E^i - rho_q` with the radial differential stencil; its initial
+error differs from the finite-volume Gauss initialization error. No cleaning
+or field reset is applied when particles are absorbed. The charged-star demo
+saves the evolved field and residual, initial/final residual norms, signed
+charge removed by weight deletion, and signed charge missing from truncated
+particle shapes. Existing fields can remain after their source is deleted.
 
 The OS Z4C runner and movie renderer default to `outputs/z4c_oppenheimer_snyder`
 inside their demo directory. Explicit historical run directories remain usable.

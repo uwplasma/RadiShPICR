@@ -816,6 +816,7 @@ def run_simulation(args):
                     particles,
                     metric,
                     trial_dt,
+                    E_r=jnp.zeros_like(metric.r),
                     EM_on=False,
                     GR_on=True,
                     zero_shift=ZERO_SHIFT,

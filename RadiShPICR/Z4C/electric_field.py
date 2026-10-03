@@ -13,6 +13,48 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
 )
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
+from RadiShPICR.Z4C.derivatives import first_derivative
+
+
+def radial_electric_field_time_derivative(
+    metric, metric_rhs, E_r, current_density, epsilon_0=1.0,
+):
+    """Evolve covariant ``E_r`` using coordinate transport current.
+
+    Radial Maxwell evolution is d_t(sqrt(gamma) * E^r) =
+    -sqrt(gamma) * J_transport^r / epsilon_0. Converting to E_r gives
+    the geometric terms below. Use the actual RK metric RHS, including
+    zeros for a fixed background; lapse and shift are already in current.
+    """
+
+    geometric_rate = (
+        0.5 * metric_rhs.conformal_grr / metric.conformal_grr
+        + 0.5 * metric_rhs.chi / metric.chi
+        - metric_rhs.conformal_gt / metric.conformal_gt
+    )
+    radial_metric = metric.conformal_grr / metric.chi
+
+    return -radial_metric * current_density / epsilon_0 + geometric_rate * E_r
+
+
+def radial_gauss_residual(metric, E_r, charge_density, epsilon_0=1.0):
+    """Return ``epsilon_0 * D_i E^i - rho_q`` from the evolved field.
+
+    This is a differential diagnostic, not the finite-volume initialization
+    operator. Its initial discretization error need not vanish. The radial
+    flux has odd origin parity on the half-cell-centered grid.
+    """
+
+    volume_factor = (
+        metric.r**2 * jnp.sqrt(metric.conformal_grr)
+        * metric.conformal_gt / metric.chi**1.5
+    )
+    radial_flux = volume_factor * metric.chi / metric.conformal_grr * E_r
+
+    return (
+        epsilon_0 * first_derivative(radial_flux, metric.dr, parity=-1)
+        / volume_factor - charge_density
+    )
 
 
 def compute_radial_charge_density(

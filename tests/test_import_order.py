@@ -95,9 +95,12 @@ def test_formulation_local_evolution_imports_are_available():
     from RadiShPICR.Z4C import (
         advance_vacuum_steps,
         compute_electrostatic_matter_terms,
+        compute_radial_current_density,
         deleting_inner_areal_radius_boundary,
         metric_rk4_step,
         misner_sharp_mass,
+        radial_electric_field_time_derivative,
+        radial_gauss_residual,
         rk4_step,
     )
 
@@ -106,6 +109,9 @@ def test_formulation_local_evolution_imports_are_available():
     assert callable(step_rk4_with_metric)
     assert callable(advance_vacuum_steps)
     assert callable(compute_electrostatic_matter_terms)
+    assert callable(compute_radial_current_density)
+    assert callable(radial_electric_field_time_derivative)
+    assert callable(radial_gauss_residual)
     assert callable(deleting_inner_areal_radius_boundary)
     assert callable(metric_rk4_step)
     assert callable(misner_sharp_mass)

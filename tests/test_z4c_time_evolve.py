@@ -150,7 +150,7 @@ def test_zero_shift_is_fixed_at_every_rk_stage(monkeypatch, coupled, metric_boun
         for _ in range(2):
             if coupled:
                 particles, updated, _, _ = time_evolve.rk4_step(
-                    particles, updated, 1.0e-4, EM_on=False, GR_on=True,
+                    particles, updated, 1.0e-4, E_r=jnp.zeros_like(updated.r), EM_on=False, GR_on=True,
                     metric_boundary=metric_boundary, zero_shift=1,
                 )
             else:
@@ -190,7 +190,7 @@ def test_compiled_zero_shift_steps(metric_boundary, beta_amplitude):
         flag = jnp.asarray(zero_shift)
         fixed_matter = metric_step(metric, matter, 1.0e-4, metric_boundary, flag)
         _, coupled, _, _ = coupled_step(
-            _make_particles(), metric, 1.0e-4, EM_on=True, GR_on=True,
+            _make_particles(), metric, 1.0e-4, E_r=jnp.zeros_like(metric.r), EM_on=True, GR_on=True,
             metric_boundary=metric_boundary, zero_shift=flag,
         )
         vacuum, first_nonfinite = scan(
@@ -205,7 +205,7 @@ def test_compiled_zero_shift_steps(metric_boundary, beta_amplitude):
 
     for flag in (0, 1):
         _, static, _, _ = coupled_step(
-            _make_particles(), metric, 1.0e-4, EM_on=False, GR_on=False,
+            _make_particles(), metric, 1.0e-4, E_r=jnp.zeros_like(metric.r), EM_on=False, GR_on=False,
             metric_boundary=metric_boundary, zero_shift=jnp.asarray(flag),
         )
         for actual, initial in zip(static, metric):
@@ -372,7 +372,7 @@ def test_rk4_step_keeps_grid_and_damping_parameters_fixed():
     _, updated, charge_density, E_r = rk4_step(
         _empty_particles(),
         metric,
-        dt=1.0e-3,
+        E_r=jnp.zeros_like(metric.r), dt=1.0e-3,
         EM_on=False,
         GR_on=True,
     )
@@ -394,7 +394,7 @@ def test_rk4_step_preserves_flat_vacuum_metric():
     _, updated, _, _ = rk4_step(
         _empty_particles(),
         metric,
-        dt=1.0e-3,
+        E_r=jnp.zeros_like(metric.r), dt=1.0e-3,
         EM_on=False,
         GR_on=True,
     )
@@ -509,7 +509,7 @@ def test_rk4_step_projects_every_metric_stage(monkeypatch):
         _, updated, _, _ = time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.1,
+            E_r=jnp.zeros_like(metric.r), dt=0.1,
             EM_on=False,
             GR_on=True,
         )
@@ -566,7 +566,7 @@ def test_rk4_step_uses_classic_stage_weights(monkeypatch):
         _, updated, _, _ = time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.6,
+            E_r=jnp.zeros_like(metric.r), dt=0.6,
             EM_on=False,
             GR_on=True,
         )
@@ -647,7 +647,7 @@ def test_rk4_step_projects_every_gr_metric_stage(monkeypatch):
         _, updated_metric, _, _ = time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.1,
+            E_r=jnp.zeros_like(metric.r), dt=0.1,
             EM_on=False,
             GR_on=True,
         )
@@ -707,7 +707,7 @@ def test_rk4_step_keeps_unrestricted_standard_particle_state(monkeypatch):
         particles,
         metric,
         dt,
-        EM_on=False,
+        E_r=jnp.zeros_like(metric.r), EM_on=False,
         GR_on=True,
     )
 
@@ -783,7 +783,7 @@ def test_rk4_step_recomputes_matter_from_each_particle_stage(monkeypatch):
             particles,
             metric,
             dt,
-            EM_on=False,
+            E_r=jnp.zeros_like(metric.r), EM_on=False,
             GR_on=True,
         )
 
@@ -826,7 +826,7 @@ def test_flat_space_radial_particle_trajectory_is_exact():
         particles, metric, _, _ = rk4_step(
             particles,
             metric,
-            dt=0.2,
+            E_r=jnp.zeros_like(metric.r), dt=0.2,
             EM_on=False,
             GR_on=True,
         )
@@ -861,7 +861,7 @@ def test_deleting_particle_boundary_removes_center_crossing(monkeypatch):
     particles, _, _, _ = time_evolve.rk4_step(
         particles,
         metric,
-        dt=0.2,
+        E_r=jnp.zeros_like(metric.r), dt=0.2,
         EM_on=False,
         GR_on=True,
         particle_boundary=deleting_particle_boundary,
@@ -903,7 +903,7 @@ def test_deleting_particle_boundary_is_irreversible_across_rk_stages(monkeypatch
         particles, _, _, _ = time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.4,
+            E_r=jnp.zeros_like(metric.r), dt=0.4,
             EM_on=False,
             GR_on=True,
             particle_boundary=deleting_particle_boundary,
@@ -956,7 +956,7 @@ def test_zero_overlap_absorption_is_irreversible_across_rk_stages(monkeypatch):
         particles, _, _, _ = time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.6,
+            E_r=jnp.zeros_like(metric.r), dt=0.6,
             EM_on=False,
             GR_on=True,
             particle_boundary=deleting_inner_areal_radius_boundary,
@@ -1161,7 +1161,7 @@ def test_particle_boundary_receives_matching_rk_stage_metric(monkeypatch):
         time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.2,
+            E_r=jnp.zeros_like(metric.r), dt=0.2,
             EM_on=False,
             GR_on=True,
             particle_boundary=record_boundary,
@@ -1228,7 +1228,7 @@ def test_areal_inner_boundary_uses_explicit_matter_deposition_at_every_stage(
         time_evolve.rk4_step(
             particles,
             metric,
-            dt=0.2,
+            E_r=jnp.zeros_like(metric.r), dt=0.2,
             EM_on=False,
             GR_on=True,
             particle_boundary=callback,
