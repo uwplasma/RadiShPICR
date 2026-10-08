@@ -62,6 +62,18 @@ saves the evolved field and residual, initial/final residual norms, signed
 charge removed by weight deletion, and signed charge missing from truncated
 particle shapes. Existing fields can remain after their source is deleted.
 
+The charged-star movie renderer includes `z4c_electric_field.mp4`, showing the
+saved non-densitized covariant FIDO field `E_r` versus areal radius with fixed
+axes. Render only this movie from the existing snapshots with:
+
+```bash
+python demos/charged_star_collapse_Z4C_GR/make_collapse_movies.py --movies electric-field
+```
+
+Omit `--movies` to render the metric, density, and electric-field movies together.
+An optional positional output directory selects a different saved run;
+`--radial-limit`, `--frame-stride`, and `--fps` apply to all selected movies.
+
 The OS Z4C runner and movie renderer default to `outputs/z4c_oppenheimer_snyder`
 inside their demo directory. Explicit historical run directories remain usable.
 Initial data now use a bracketed spatial Heun shooting solve and one lapse

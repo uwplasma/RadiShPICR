@@ -128,6 +128,47 @@ def make_bssn_movie(snapshots, movie_path, boundary_name, radial_limit, fps):
     plt.close(figure)
 
 
+def make_electric_field_movie(snapshots, movie_path, boundary_name, radial_limit, fps):
+    """Plot the non-densitized covariant FIDO field E_r at a fixed scale."""
+    lower = 0.0
+    upper = 0.0
+    for snapshot_path in snapshots:
+        with np.load(snapshot_path) as snapshot:
+            inside = snapshot["areal_radius"] <= radial_limit
+            E_r = snapshot["E_r"][inside]
+            lower = np.minimum(lower, np.min(E_r))
+            upper = np.maximum(upper, np.max(E_r))
+
+    span = upper - lower
+    padding = 0.05 * span if span > 0.0 else 0.05
+    figure, axis = plt.subplots(figsize=(9, 5), constrained_layout=True)
+    line, = axis.plot([], [], linewidth=1.5)
+    axis.set_xlim(0.0, radial_limit)
+    axis.set_ylim(lower - padding, upper + padding)
+    axis.set_title("Covariant FIDO field")
+    axis.set_xlabel(r"areal radius $R$ (code units)")
+    axis.set_ylabel(r"$E_r$ (code units)")
+    axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
+    axis.grid(alpha=0.25)
+    title = figure.suptitle("")
+
+    writer = FFMpegWriter(fps=fps, codec="libx264", extra_args=["-pix_fmt", "yuv420p"], metadata={"artist": "RadiShPICR"})
+    with writer.saving(figure, movie_path, dpi=110):
+        for snapshot_path in snapshots:
+            with np.load(snapshot_path) as snapshot:
+                radius = snapshot["areal_radius"]
+                # Saved E_r is already non-densitized, in the isotropic basis.
+                E_r = snapshot["E_r"]
+                line.set_data(radius, E_r)
+                title.set_text(
+                    # f"Z4c charged-star electric field, {boundary_name} particles\n"
+                    f"step {int(snapshot['step']):06d}, " + snapshot_time_label(snapshot)
+                )
+            writer.grab_frame()
+
+    plt.close(figure)
+
+
 def density_color_limits(snapshots, radial_limit):
     positive_density = []
     for snapshot_path in snapshots:
@@ -231,6 +272,13 @@ def parse_arguments():
     parser.add_argument("--radial-limit", type=float, default=15.0)
     parser.add_argument("--frame-stride", type=int, default=1)
     parser.add_argument("--fps", type=int, default=50)
+    parser.add_argument(
+        "--movies",
+        nargs="+",
+        choices=("bssn", "density", "electric-field"),
+        default=("bssn", "density", "electric-field"),
+        help="select movies to render (default: all three)",
+    )
     return parser.parse_args()
 
 
@@ -247,20 +295,30 @@ def main():
         args.output_directory,
         max(1, args.frame_stride),
     )
-    make_bssn_movie(
-        snapshots,
-        args.output_directory / "z4c_bssn_variables.mp4",
-        boundary_name,
-        args.radial_limit,
-        args.fps,
-    )
-    make_density_movie(
-        snapshots,
-        args.output_directory / "z4c_spherical_density.mp4",
-        boundary_name,
-        args.radial_limit,
-        args.fps,
-    )
+    if "bssn" in args.movies:
+        make_bssn_movie(
+            snapshots,
+            args.output_directory / "z4c_bssn_variables.mp4",
+            boundary_name,
+            args.radial_limit,
+            args.fps,
+        )
+    if "density" in args.movies:
+        make_density_movie(
+            snapshots,
+            args.output_directory / "z4c_spherical_density.mp4",
+            boundary_name,
+            args.radial_limit,
+            args.fps,
+        )
+    if "electric-field" in args.movies:
+        make_electric_field_movie(
+            snapshots,
+            args.output_directory / "z4c_electric_field.mp4",
+            boundary_name,
+            args.radial_limit,
+            args.fps,
+        )
 
 
 if __name__ == "__main__":
