@@ -1,9 +1,5 @@
 """Z4C metric and time-evolution helpers for RadiShPICR."""
 
-from RadiShPICR.Z4C.boundary_conditions import (
-    METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
-    METRIC_BOUNDARY_SOMMERFELD,
-)
 from RadiShPICR.Z4C.curvature_invariants import misner_sharp_mass
 from RadiShPICR.Z4C.current import compute_radial_current_density
 from RadiShPICR.Z4C.electric_field import (
@@ -29,8 +25,6 @@ from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 __all__ = [
     "Z4C_Metric",
-    "METRIC_BOUNDARY_CONSTRAINT_PRESERVING",
-    "METRIC_BOUNDARY_SOMMERFELD",
     "advance_vacuum_steps",
     "compute_electrostatic_matter_terms",
     "compute_radial_charge_density",

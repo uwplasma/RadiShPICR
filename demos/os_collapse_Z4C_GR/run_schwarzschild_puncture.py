@@ -22,10 +22,6 @@ PACKAGE_ROOT = DEMO_DIRECTORY.parent.parent
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
 
-from RadiShPICR.Z4C.boundary_conditions import (
-    METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
-    METRIC_BOUNDARY_SOMMERFELD,
-)
 from RadiShPICR.Z4C.time_evolve import advance_vacuum_steps
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -34,10 +30,6 @@ SNAPSHOT_NAMES = {
     "alpha": "alpha", "beta": "beta", "chi": "chi",
     "conformal_grr": "conformal_grr", "conformal_gt": "conformal_gT",
     "Kh": "Kh", "Arr": "Arr", "At": "AT", "theta": "theta", "Gamma": "Gamma",
-}
-BOUNDARIES = {
-    "sommerfeld": METRIC_BOUNDARY_SOMMERFELD,
-    "constraint_preserving": METRIC_BOUNDARY_CONSTRAINT_PRESERVING,
 }
 
 
@@ -90,9 +82,8 @@ def save_snapshot(metric, directory, step, time, mass):
 
 
 def evolve_puncture(metric, mass, output_directory, duration=150.0, cfl=0.2,
-                    snapshot_count=500, zero_shift=0,
-                    metric_boundary=METRIC_BOUNDARY_SOMMERFELD):
-    """Save finite chunks; a failed chunk never replaces an accepted checkpoint."""
+                    snapshot_count=500, zero_shift=0):
+    """Evolve with Sommerfeld boundaries, saving only finite checkpoints."""
     metric_directory = Path(output_directory) / "metric"
     metric_directory.mkdir()
     target_time = duration * mass
@@ -109,7 +100,7 @@ def evolve_puncture(metric, mass, output_directory, duration=150.0, cfl=0.2,
             chunk_steps = min(interval, num_steps - completed_steps)
             trial_metric, first_nonfinite = advance(
                 metric, dt, num_steps=chunk_steps,
-                zero_shift=zero_shift, metric_boundary=metric_boundary,
+                zero_shift=zero_shift,
             )
             first_nonfinite = int(jax.device_get(first_nonfinite))
             if first_nonfinite >= 0:
@@ -150,7 +141,6 @@ def main():
     parser.add_argument("--nu", type=float, default=0.02)
     parser.add_argument("--zero-shift", type=int, choices=(0, 1),
                         help="Default: use the shift setting in the OS initial metadata.")
-    parser.add_argument("--metric-boundary", choices=tuple(BOUNDARIES), default="sommerfeld")
     args = parser.parse_args()
     if args.duration <= 0 or args.cfl <= 0 or args.snapshot_count < 1:
         parser.error("duration, cfl, and snapshot-count must be positive")
@@ -167,7 +157,7 @@ def main():
         "mass": mass, "mass_source": "initial_gravitational_mass",
         "source_initial_metadata": str(source), "mass_metadata_key": "total_mass",
         "kappa": args.kappa, "eta": args.eta, "nu": args.nu,
-        "zero_shift": zero_shift, "metric_boundary": args.metric_boundary,
+        "zero_shift": zero_shift, "metric_boundary": "sommerfeld",
         "damping_parameters_source": "CLI values; defaults match the current OS demo, not recorded in old OS output",
         "num_cells": int(r.size), "dr": float(metric.dr),
     }
@@ -176,7 +166,7 @@ def main():
     summary_path.write_text(json.dumps({**provenance, "completed": False}, indent=2) + "\n")
     result = evolve_puncture(
         metric, mass, args.output_directory, args.duration, args.cfl,
-        args.snapshot_count, zero_shift, BOUNDARIES[args.metric_boundary],
+        args.snapshot_count, zero_shift,
     )
     summary_path.write_text(json.dumps({**provenance, **result}, indent=2) + "\n")
     print(json.dumps({**provenance, **result}, indent=2))

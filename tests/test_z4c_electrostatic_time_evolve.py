@@ -88,7 +88,7 @@ def test_current_and_field_match_every_rk4_stage(monkeypatch, inner_open):
         zeros = jnp.zeros_like(stage_particles.r)
         return zeros, zeros, jnp.ones_like(stage_particles.r), zeros
 
-    def metric_from_energy(stage_metric, matter, metric_boundary=0, zero_shift=0):
+    def metric_from_energy(stage_metric, matter, *, zero_shift=0):
         return jax.tree.map(jnp.zeros_like, stage_metric)._replace(alpha=matter.rho)
 
     monkeypatch.setattr(time_evolve, "compute_radial_current_density", record_current)
@@ -210,7 +210,7 @@ def test_em_and_gr_add_field_stress_energy_at_matching_rk_stages(monkeypatch):
         zeros = jnp.zeros_like(stage_particles.r)
         return zeros, zeros, zeros, zeros
 
-    def derivative_from_energy(stage_metric, matter_terms, metric_boundary=0, zero_shift=0):
+    def derivative_from_energy(stage_metric, matter_terms, *, zero_shift=0):
         zeros = jnp.zeros_like(stage_metric.r)
         return Z4C_Metric(
             alpha=matter_terms.rho,
@@ -319,7 +319,7 @@ def test_coupled_particle_field_manufactured_fourth_order(monkeypatch):
 def test_geometric_field_evolution_uses_stage_metric_rhs(monkeypatch):
     import RadiShPICR.Z4C.time_evolve as time_evolve
 
-    def expanding_metric(metric, matter, metric_boundary=0, zero_shift=0):
+    def expanding_metric(metric, matter, *, zero_shift=0):
         return jax.tree.map(jnp.zeros_like, metric)._replace(chi=2. * metric.chi)
 
     monkeypatch.setattr(time_evolve, "metric_time_derivatives", expanding_metric)

@@ -6,7 +6,7 @@ from RadiShPICR.Z4C.derivatives import first_derivative, second_derivative, sixt
 CHI_FLOOR_VALUE = 1e-12
 
 
-def dKhdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
+def dKhdt(metric: Z4C_Metric, matter_terms):
     Arr = metric.Arr
     At = metric.At
     alpha = metric.alpha
@@ -74,13 +74,7 @@ def dKhdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     sommerfeld_boundary = -lapse_speed * (
         dKhdr[-1] + Kh[-1] / metric.r[-1]
     )
-    dKhdt = dKhdt.at[-1].set(
-        jnp.where(
-            apply_sommerfeld_boundary,
-            sommerfeld_boundary,
-            dKhdt[-1],
-        )
-    )
+    dKhdt = dKhdt.at[-1].set(sommerfeld_boundary)
     # set the time derivative of Kh at the outer boundary using the Sommerfeld boundary condition
 
 
@@ -88,7 +82,7 @@ def dKhdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
 
 
 
-def dArrdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
+def dArrdt(metric: Z4C_Metric, matter_terms):
     Arr = metric.Arr
     At = metric.At
     alpha = metric.alpha
@@ -220,13 +214,7 @@ def dArrdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     sommerfeld_boundary = -speed_of_light * (
         dArrdr[-1] + Arr[-1] / metric.r[-1]
     )
-    dArrdt = dArrdt.at[-1].set(
-        jnp.where(
-            apply_sommerfeld_boundary,
-            sommerfeld_boundary,
-            dArrdt[-1],
-        )
-    )
+    dArrdt = dArrdt.at[-1].set(sommerfeld_boundary)
     # set the time derivative of theta at the outer boundary using the Sommerfeld boundary condition
     
 
@@ -234,7 +222,7 @@ def dArrdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
 
 
 
-def dAtdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
+def dAtdt(metric: Z4C_Metric, matter_terms):
     Arr = metric.Arr
     At = metric.At
     alpha = metric.alpha
@@ -363,13 +351,7 @@ def dAtdt(metric: Z4C_Metric, matter_terms, apply_sommerfeld_boundary=True):
     sommerfeld_boundary = -speed_of_light * (
         dAtdr[-1] + At[-1] / metric.r[-1]
     )
-    dAtdt = dAtdt.at[-1].set(
-        jnp.where(
-            apply_sommerfeld_boundary,
-            sommerfeld_boundary,
-            dAtdt[-1],
-        )
-    )
+    dAtdt = dAtdt.at[-1].set(sommerfeld_boundary)
     # set the time derivative of At at the outer boundary using the Sommerfeld boundary condition
 
 

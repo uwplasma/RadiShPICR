@@ -127,8 +127,7 @@ Features:
   stress-energy for dynamical spacetimes.
 - Explicit metric-only Z4C RK4 evolution for vacuum and prescribed-source
   calculations without particle deposition.
-- Selectable standard Sommerfeld and nonlinear constraint-preserving outer
-  boundaries for spherical Z4C evolution; Sommerfeld remains the default.
+- Sommerfeld outer boundary conditions for spherical Z4C evolution.
 
 Demos:
 - [X] Single puncture black hole in Z4C.
