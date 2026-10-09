@@ -1,6 +1,6 @@
 """Compare saved charged-star and evolved RN puncture final states.
 
-Undo the star's diagnostic rescaling before comparing coordinate components.
+Undo diagnostic rescaling only for historical Schwarzschild-chart snapshots.
 Areal radius changes the horizontal axis, not the gauge of those components.
 Plot only the covariant electric field E_r and final BSSN/Z4C variables.
 No evolution or parameter fitting is performed here.
@@ -18,9 +18,9 @@ import numpy as np
 
 
 DEMO_DIRECTORY = Path(__file__).resolve().parent
-STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild"
-PUNCTURE_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge"
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/rn_comparison_initial_mass_charge"
+STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+PUNCTURE_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_evolution_300M"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/rn_comparison_evolution_300M"
 RADIAL_LIMIT = 10.0  # Maximum R/M for the inner figures.
 
 VARIABLES = (
@@ -90,7 +90,7 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
 
     labels = []
     for name, (_, info, _) in zip(("Charged star", "RN puncture"), datasets):
-        label = f"{name}: evolution t/M={info['evolution_time'] / mass:.5f}"
+        label = f"{name}: Z4C t/M={info['evolution_time'] / mass:.5f}"
         if info["saved_coordinates"] != "evolution":
             label += f", diagnostic t/M={info['time'] / mass:.5f}"
         if info["completed"] is False:

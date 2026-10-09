@@ -31,12 +31,12 @@ from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
 # Edit these settings before running the script.
-INPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild"
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge"
-DURATION = 150.0  # Final evolution t/M.
+INPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_evolution_300M"
+DURATION = 300.0  # Final Z4C evolution t/M, using the initial gravitational mass.
 CFL = 0.2
 SNAPSHOT_COUNT = 500
-PUNCTURE_CHI_FLOOR = 1e-12  # First three cells at RK stages; 0 disables it.
+PUNCTURE_CHI_FLOOR = 1e-14  # First three cells at RK stages; 0 disables it.
 
 # None uses the value recorded in the charged-star metadata.
 ZERO_SHIFT = None  # Set 1 to freeze the initial shift or 0 to evolve it.
@@ -138,7 +138,8 @@ def save_snapshot(metric, directory, step, evolution_time, mass, charge, epsilon
         r=np.asarray(metric.r), diagnostic_bulk_mask=bulk, step=step,
         time=evolution_time, evolution_time=evolution_time, time_over_mass=evolution_time / mass,
         total_mass=mass, initial_charge=charge, epsilon_0=epsilon_0,
-        saved_coordinates="evolution", electric_field_update="constant_puncture_flux",
+        saved_coordinates="evolution", time_coordinate="evolution",
+        electric_field_update="constant_puncture_flux",
     )
     return norms
 
@@ -169,7 +170,7 @@ def advance_puncture_steps(metric, charge, dt, num_steps, epsilon_0=1.0,
 
 
 def evolve_puncture(metric, mass, charge, epsilon_0, output_directory,
-                    duration=150.0, cfl=0.2, snapshot_count=500, zero_shift=0,
+                    duration=300.0, cfl=0.2, snapshot_count=500, zero_shift=0,
                     provenance=None, puncture_chi_floor=1e-12):
     output_directory = Path(output_directory)
     # Never reuse a campaign directory, even if it only contains its metadata.
@@ -188,7 +189,8 @@ def evolve_puncture(metric, mass, charge, epsilon_0, output_directory,
         geometric_charge=charge / np.sqrt(4.0 * np.pi * epsilon_0),
         mass_source="initial_gravitational_mass", charge_source="initial_charge",
         completed=False, target_time=target_time, duration_over_mass=duration,
-        time_coordinate="evolution", dt=dt, cfl=cfl, snapshot_interval_steps=interval,
+        time_coordinate="evolution", saved_coordinates="evolution",
+        dt=dt, cfl=cfl, snapshot_interval_steps=interval,
         num_cells=int(metric.r.size), dr=float(metric.dr), zero_shift=int(zero_shift),
         kappa=float(metric.kappa), eta=float(metric.eta), nu=float(metric.nu),
         metric_boundary="sommerfeld", initial_lapse="psi^-2",
@@ -207,11 +209,12 @@ def evolve_puncture(metric, mass, charge, epsilon_0, output_directory,
     advance = jax.jit(advance_puncture_steps, static_argnames=("num_steps",))
     with tqdm(total=num_steps, desc="evolving RN puncture") as progress:
         while True:
-            norms = save_snapshot(metric, metric_directory, completed_steps, completed_steps * dt, mass, charge, epsilon_0)
+            evolution_time = target_time if completed_steps == num_steps else completed_steps * dt
+            norms = save_snapshot(metric, metric_directory, completed_steps, evolution_time, mass, charge, epsilon_0)
             summary.update(
                 completed=completed_steps == num_steps, final_step=completed_steps,
-                final_time=completed_steps * dt, final_time_over_mass=completed_steps * dt / mass,
-                final_evolution_time=completed_steps * dt, **norms,
+                final_time=evolution_time, final_time_over_mass=evolution_time / mass,
+                final_evolution_time=evolution_time, **norms,
                 maximum_saved_charge_flux_error=max(summary.get("maximum_saved_charge_flux_error", 0.0), norms["charge_flux_error_linf"]),
                 stop_reason=("nonfinite_state" if failure == 1 else "nonpositive_geometry") if failure else (
                     "target_time" if completed_steps == num_steps else "running"),

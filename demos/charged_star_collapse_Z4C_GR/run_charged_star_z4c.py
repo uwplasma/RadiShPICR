@@ -1,4 +1,4 @@
-"""Charged Heun-initialized stellar collapse in the OS Schwarzschild chart."""
+"""Charged Heun-initialized stellar collapse in Z4C evolution coordinates."""
 
 import json
 import math
@@ -37,7 +37,7 @@ from RadiShPICR.particles.shape_factors.cartesian_shapes import (
 )
 
 # Edit these settings before running the script.
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
 MASS_SCALE = 1.0  # Initial gravitational mass for the seed and normalization.
 CHARGE_TO_MASS = 0.2  # Signed Q_geom / stellar rest mass.
 SURFACE_AREAL_RADIUS = 10.0
@@ -50,11 +50,11 @@ SHAPE_MODE = "quadratic"  # "nearest", "linear", or "quadratic".
 INITIAL_TOLERANCE = os_collapse.SHOOTING_TOLERANCE
 SHOOTING_MAX_ITERATIONS = os_collapse.SHOOTING_MAX_ITERATIONS
 
-TARGET_TIME = 150.0  # Target Schwarzschild diagnostic time, G=c=1.
+DURATION = 300.0  # Final Z4C evolution t/M, using the initial gravitational mass.
 CFL = 0.2
 MINIMUM_DT = 1.e-7
 SAVE_EVERY = 10
-MAX_STEPS = None  # None evolves to TARGET_TIME.
+MAX_STEPS = None  # None evolves to DURATION * MASS_SCALE.
 ZERO_SHIFT = 0  # 1 freezes the initial shift; 0 evolves it with Z4C.
 KAPPA = 1.0
 ETA = 2.0
@@ -165,19 +165,20 @@ def state_is_acceptable(metric, particles, charge_density, E_r):
     return jnp.all(state_checks(metric, particles, charge_density, E_r))
 
 
-def write_snapshot(metric, particles, E_r, output_directory, step, evolution_time, schwarzschild_time, reference_mass, initial_charge):
-    metric, particles, X_r, X_t, mismatch = os_collapse.rescale_z4c_to_schwarzschild_coordinates(
-        metric, particles, reference_mass,
-    )
+def write_snapshot(metric, particles, E_r, output_directory, step, evolution_time, reference_mass, initial_charge):
     fields = {key: np.asarray(getattr(metric, name)) for name, key in SNAPSHOT_NAMES.items()}
-    # E_r is a spatial covector, so r' = X_r*r implies E'_r = E_r/X_r.
-    diagnostics = {key: np.asarray(value) for key, value in snapshot_fields(metric, particles, E_r / X_r, EPSILON_0).items()}
+    # Save the same coordinate components used by the RK stages, including E_r
+    # and the particles' covariant radial momenta.
+    diagnostics = {key: np.asarray(value) for key, value in snapshot_fields(metric, particles, E_r, EPSILON_0).items()}
     diagnostics["removed_particle_charge"] = initial_charge - float(jnp.sum(particles.get_charge()))
+    grr, gT = diagnostics["grr"][-1], diagnostics["gT"][-1]
+    mismatch = (grr - gT) / (0.5 * (grr + gT))
     common = dict(
-        step=step, time=schwarzschild_time, schwarzschild_time=schwarzschild_time,
-        evolution_time=evolution_time, saved_coordinates="schwarzschild_isotropic_diagnostic",
+        step=step, time=evolution_time, evolution_time=evolution_time,
+        time_over_mass=evolution_time / reference_mass,
+        saved_coordinates="evolution", time_coordinate="evolution",
         reference_mass=reference_mass, total_mass=reference_mass,
-        epsilon_0=EPSILON_0, X_r=float(X_r), X_t=float(X_t),
+        epsilon_0=EPSILON_0,
         normalization_charge=0.0, outer_metric_mismatch=float(mismatch),
         initial_charge=initial_charge,
         total_charge=float(jnp.sum(particles.get_charge())),
@@ -209,7 +210,7 @@ def run_simulation():
     if not (0.0 < 2.0 * MASS_SCALE < SURFACE_AREAL_RADIUS):
         raise ValueError("Require 0 < 2*MASS_SCALE < SURFACE_AREAL_RADIUS for the OS seed profile.")
     if (NUM_CELLS < 8 or PARTICLES_PER_SHELL < 1 or SAVE_EVERY < 1
-            or TARGET_TIME <= 0 or CFL <= 0 or MINIMUM_DT <= 0 or R_MAX <= 0
+            or not np.isfinite(DURATION) or DURATION <= 0 or CFL <= 0 or MINIMUM_DT <= 0 or R_MAX <= 0
             or SHOOTING_MAX_ITERATIONS < 1 or INITIAL_TOLERANCE <= 0 or (MAX_STEPS is not None and MAX_STEPS < 0)):
         raise ValueError("Times and grid/output counts must be positive (NUM_CELLS >= 8).")
 
@@ -219,6 +220,7 @@ def run_simulation():
     if output.exists() and any(output.iterdir()):
         raise RuntimeError(f"Refusing to overwrite nonempty output directory: {output}")
     metric, particles, initial_data, mass, rest_mass = build_initial_state()
+    target_time = DURATION * mass
     initial_charge = float(jnp.sum(particles.get_charge()))
     if abs(initial_charge) / np.sqrt(4.0 * np.pi) >= mass:
         raise ValueError("The comparison requires subextremal RN initial data, |Q_geom| < M.")
@@ -256,11 +258,11 @@ def run_simulation():
         electric_field_update="current_rk4_covariant_E_r",
         gauss_diagnostic="differential_epsilon_0_div_E_minus_rho_q",
         inner_open=True, metric_boundary="sommerfeld",
-        saved_coordinates="schwarzschild_isotropic_diagnostic",
-        time_coordinate="schwarzschild", target_time=TARGET_TIME,
+        saved_coordinates="evolution", time_coordinate="evolution",
+        target_time=target_time, duration_over_mass=DURATION,
         cfl=CFL, particle_state_variables="r_ur",
     )
-    initial = write_snapshot(metric, particles, E_r, output, 0, 0.0, 0.0, mass, initial_charge)
+    initial = write_snapshot(metric, particles, E_r, output, 0, 0.0, mass, initial_charge)
     metadata["initial_gauss_residual_linf"] = float(initial["gauss_residual_linf"])
     metadata["initial_gauss_residual_rms"] = float(initial["gauss_residual_rms"])
     np.savez_compressed(
@@ -272,20 +274,19 @@ def run_simulation():
     )
     summary_path = output / "run_summary.json"
     summary_path.write_text(json.dumps({**metadata, "completed": False, "final_step": 0,
-                                      "final_time": 0.0, "final_evolution_time": 0.0}, indent=2) + "\n")
-    step, evolution_time, schwarzschild_time = 0, 0.0, 0.0
-    _, X_t, _ = os_collapse.schwarzschild_rescale_factors_from_z4c(metric, mass)
-    X_t = float(X_t)
+                                      "final_time": 0.0, "final_evolution_time": 0.0,
+                                      "final_time_over_mass": 0.0}, indent=2) + "\n")
+    step, evolution_time = 0, 0.0
     maximum_steps = math.inf if MAX_STEPS is None else MAX_STEPS
-    time_tolerance = 1.0e-12 * max(1.0, TARGET_TIME)
+    time_tolerance = 1.0e-12 * max(1.0, target_time)
     stop_reason = "target_time"
     failure_names = ("nonfinite_state", "nonpositive_geometry", "outer_particle_boundary")
-    with tqdm(total=TARGET_TIME, desc="charged collapse (Schwarzschild time)", unit="t") as progress:
-        while TARGET_TIME - schwarzschild_time > time_tolerance and step < maximum_steps:
-            remaining = TARGET_TIME - schwarzschild_time
+    with tqdm(total=DURATION, desc="charged collapse (Z4C time)", unit="t/M") as progress:
+        while target_time - evolution_time > time_tolerance and step < maximum_steps:
+            remaining = target_time - evolution_time
             trial_dt = min(CFL * float(metric.dr),
                            os_collapse.freefall_collapse_time_step(particles, metric),
-                           remaining / X_t)
+                           remaining)
             accepted = False
             endpoint_trial = trial_dt < MINIMUM_DT
             while trial_dt >= MINIMUM_DT or endpoint_trial:
@@ -301,46 +302,34 @@ def run_simulation():
                     stop_reason = failure_names[int(np.flatnonzero(~checks)[0])] + "_at_minimum_dt"
                     trial_dt *= 0.5
                     continue
-                trial_X_r, trial_X_t, _ = os_collapse.schwarzschild_rescale_factors_from_z4c(trial_metric, mass)
-                trial_X_t = float(trial_X_t)
-                if not (np.isfinite(float(trial_X_r)) and float(trial_X_r) > 0.0
-                        and np.isfinite(trial_X_t) and trial_X_t > 0.0):
-                    stop_reason = "invalid_schwarzschild_normalization_at_minimum_dt"
-                    trial_dt *= 0.5
-                    continue
-                schwarzschild_dt = 0.5 * (X_t + trial_X_t) * trial_dt
-                if schwarzschild_dt > remaining + time_tolerance:
-                    trial_dt *= remaining / schwarzschild_dt
-                    endpoint_trial = trial_dt < MINIMUM_DT
-                    continue
                 accepted = True
                 break
             if not accepted:
                 break
             metric, particles, E_r = trial_metric, trial_particles, trial_E
             evolution_time += trial_dt
-            schwarzschild_time += schwarzschild_dt
-            X_t = trial_X_t
             step += 1
-            progress.update(schwarzschild_dt)
+            progress.update(trial_dt / mass)
             if step % SAVE_EVERY == 0:
-                diagnostics = write_snapshot(metric, particles, E_r, output, step, evolution_time, schwarzschild_time, mass, initial_charge)
+                diagnostics = write_snapshot(metric, particles, E_r, output, step, evolution_time, mass, initial_charge)
                 summary_path.write_text(json.dumps({**metadata, "completed": False, "final_step": step,
                     "final_gauss_residual_linf": float(diagnostics["gauss_residual_linf"]),
                     "final_gauss_residual_rms": float(diagnostics["gauss_residual_rms"]),
                     "removed_particle_charge": float(diagnostics["removed_particle_charge"]),
                     "truncated_shape_charge": float(diagnostics["truncated_shape_charge"]),
-                    "final_time": schwarzschild_time, "final_evolution_time": evolution_time}, indent=2) + "\n")
-    completed = TARGET_TIME - schwarzschild_time <= time_tolerance
+                    "final_time": evolution_time, "final_evolution_time": evolution_time,
+                    "final_time_over_mass": evolution_time / mass}, indent=2) + "\n")
+    completed = target_time - evolution_time <= time_tolerance
     if completed:
-        schwarzschild_time = TARGET_TIME
+        evolution_time = target_time
         stop_reason = "target_time"
     elif step >= maximum_steps:
         stop_reason = "max_steps"
-    final = write_snapshot(metric, particles, E_r, output, step, evolution_time, schwarzschild_time, mass, initial_charge)
+    final = write_snapshot(metric, particles, E_r, output, step, evolution_time, mass, initial_charge)
     summary = dict(
         **metadata, completed=completed, stop_reason=stop_reason,
-        final_step=step, final_time=schwarzschild_time, final_evolution_time=evolution_time,
+        final_step=step, final_time=evolution_time, final_evolution_time=evolution_time,
+        final_time_over_mass=evolution_time / mass,
         total_particles=int(particles.r.size), active_particles=int(jnp.count_nonzero(particles.weight)),
         final_active_particle_weight=float(jnp.sum(particles.weight)),
         final_particle_charge=float(jnp.sum(particles.get_charge())),

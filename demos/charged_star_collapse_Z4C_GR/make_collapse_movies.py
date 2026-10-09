@@ -16,7 +16,7 @@ from matplotlib.colors import LogNorm
 OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent
     / "outputs"
-    / "z4c_charged_star_schwarzschild"
+    / "z4c_charged_star_evolution_300M"
 )
 BOUNDARY_NAME = None  # None uses the particle boundary recorded by the run.
 RADIAL_LIMIT = 15.0
@@ -44,8 +44,8 @@ def snapshot_time_label(snapshot):
     time = float(snapshot["time"]) / mass
     if str(snapshot["saved_coordinates"]) == "schwarzschild_isotropic_diagnostic":
         evolution_time = float(snapshot["evolution_time"]) / mass
-        return f"Schwarzschild t/M = {time:.5f}\nevolution t/M = {evolution_time:.5f}"
-    return f"evolution t/M = {time:.5f}"
+        return f"Schwarzschild t/M = {time:.5f}\nZ4C t/M = {evolution_time:.5f}"
+    return f"Z4C t/M = {time:.5f}"
 
 
 def particle_boundary_name(output_directory):
