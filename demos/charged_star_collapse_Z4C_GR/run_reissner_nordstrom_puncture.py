@@ -5,7 +5,6 @@ Units are G=c=1; Q is physical charge and q=Q/sqrt(4*pi*epsilon_0).
 The conserved quantity is electric flux, not the coordinate component E_r.
 """
 
-import argparse
 import json
 import math
 import sys
@@ -30,6 +29,20 @@ from RadiShPICR.Z4C.energy_momentum_tensor import compute_hamiltonian_constraint
 from RadiShPICR.Z4C.time_evolve import electrovac_rk4_step
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
+
+# Edit these settings before running the script.
+INPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge"
+DURATION = 150.0  # Final evolution t/M.
+CFL = 0.2
+SNAPSHOT_COUNT = 500
+PUNCTURE_CHI_FLOOR = 1e-12  # First three cells at RK stages; 0 disables it.
+
+# None uses the value recorded in the charged-star metadata.
+ZERO_SHIFT = None  # Set 1 to freeze the initial shift or 0 to evolve it.
+KAPPA = None
+ETA = None
+NU = None
 
 SNAPSHOT_NAMES = {
     "alpha": "alpha", "beta": "beta", "chi": "chi",
@@ -220,41 +233,29 @@ def evolve_puncture(metric, mass, charge, epsilon_0, output_directory,
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--input-directory", type=Path, default=DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild")
-    parser.add_argument("--output-directory", type=Path, default=DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge")
-    parser.add_argument("--duration", type=float, default=150.0, help="Final evolution t/M (default: 150).")
-    parser.add_argument("--cfl", type=float, default=0.2)
-    parser.add_argument("--snapshot-count", type=int, default=500)
-    parser.add_argument("--puncture-chi-floor", type=float, default=1e-12,
-                        help="Chi floor in the first three cells at RK stages; 0 disables it (default: 1e-12).")
-    parser.add_argument("--zero-shift", type=int, choices=(0, 1))
-    for name in ("kappa", "eta", "nu"):
-        parser.add_argument("--" + name, type=float, help="Default: use the saved charged-star value.")
-    args = parser.parse_args()
-    if (not np.isfinite(args.duration) or not np.isfinite(args.cfl)
-            or args.duration <= 0.0 or args.cfl <= 0.0 or args.snapshot_count < 1):
-        parser.error("duration, cfl, and snapshot-count must be positive and finite")
-    if args.output_directory.exists():
-        parser.error(f"Refusing to overwrite existing run: {args.output_directory}")
-    if not np.isfinite(args.puncture_chi_floor) or args.puncture_chi_floor < 0.0:
-        parser.error("puncture-chi-floor must be finite and nonnegative")
+    if (not np.isfinite(DURATION) or not np.isfinite(CFL)
+            or DURATION <= 0.0 or CFL <= 0.0 or SNAPSHOT_COUNT < 1):
+        raise ValueError("DURATION, CFL, and SNAPSHOT_COUNT must be positive and finite.")
+    if OUTPUT_DIRECTORY.exists():
+        raise FileExistsError(f"Refusing to overwrite existing run: {OUTPUT_DIRECTORY}")
+    if not np.isfinite(PUNCTURE_CHI_FLOOR) or PUNCTURE_CHI_FLOOR < 0.0:
+        raise ValueError("PUNCTURE_CHI_FLOOR must be finite and nonnegative.")
 
     jax.config.update("jax_enable_x64", True)
-    r, parameters = read_initial_data(args.input_directory)
-    for name in ("zero_shift", "kappa", "eta", "nu"):
-        if getattr(args, name) is not None:
-            parameters[name] = getattr(args, name)
+    r, parameters = read_initial_data(INPUT_DIRECTORY)
+    for name, value in (("zero_shift", ZERO_SHIFT), ("kappa", KAPPA), ("eta", ETA), ("nu", NU)):
+        if value is not None:
+            parameters[name] = value
     mass, charge, epsilon_0 = (parameters[name] for name in ("total_mass", "initial_charge", "epsilon_0"))
     metric = initialize_puncture(r, mass, charge, epsilon_0,
                                 parameters["kappa"], parameters["eta"], parameters["nu"])
-    source = (args.input_directory / "initial_data_metadata.npz").resolve()
+    source = (INPUT_DIRECTORY / "initial_data_metadata.npz").resolve()
     print(f"RN reference: M={mass:.12g}, Q={charge:.12g}; source: {source}", flush=True)
     summary = evolve_puncture(
-        metric, mass, charge, epsilon_0, args.output_directory,
-        args.duration, args.cfl, args.snapshot_count, parameters["zero_shift"],
+        metric, mass, charge, epsilon_0, OUTPUT_DIRECTORY,
+        DURATION, CFL, SNAPSHOT_COUNT, parameters["zero_shift"],
         provenance={"source_initial_metadata": str(source), "mass_metadata_key": "total_mass"},
-        puncture_chi_floor=args.puncture_chi_floor,
+        puncture_chi_floor=PUNCTURE_CHI_FLOOR,
     )
     print(json.dumps(summary, indent=2))
     if not summary["completed"]:
