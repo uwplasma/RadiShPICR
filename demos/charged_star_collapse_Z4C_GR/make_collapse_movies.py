@@ -129,26 +129,24 @@ def make_bssn_movie(snapshots, movie_path, boundary_name, radial_limit, fps):
 
 
 def make_electric_field_movie(snapshots, movie_path, boundary_name, radial_limit, fps):
-    """Plot the non-densitized covariant FIDO field E_r at a fixed scale."""
-    lower = 0.0
+    """Plot the non-densitized covariant FIDO field E_r on a fixed log scale."""
+    lower = np.inf
     upper = 0.0
     for snapshot_path in snapshots:
         with np.load(snapshot_path) as snapshot:
             inside = snapshot["areal_radius"] <= radial_limit
             E_r = snapshot["E_r"][inside]
-            lower = np.minimum(lower, np.min(E_r))
+            lower = np.minimum(lower, np.min(E_r[E_r > 0.0], initial=np.inf))
             upper = np.maximum(upper, np.max(E_r))
 
-    span = upper - lower
-    padding = 0.05 * span if span > 0.0 else 0.05
     figure, axis = plt.subplots(figsize=(9, 5), constrained_layout=True)
     line, = axis.plot([], [], linewidth=1.5)
     axis.set_xlim(0.0, radial_limit)
-    axis.set_ylim(lower - padding, upper + padding)
+    axis.set_yscale("log", nonpositive="mask")
+    axis.set_ylim(lower / 1.2, upper * 1.2)
     axis.set_title("Covariant FIDO field")
     axis.set_xlabel(r"areal radius $R$ (code units)")
     axis.set_ylabel(r"$E_r$ (code units)")
-    axis.ticklabel_format(axis="y", style="sci", scilimits=(-2, 2))
     axis.grid(alpha=0.25)
     title = figure.suptitle("")
 
