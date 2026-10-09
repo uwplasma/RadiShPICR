@@ -6,7 +6,6 @@ Plot only the covariant electric field E_r and final BSSN/Z4C variables.
 No evolution or parameter fitting is performed here.
 """
 
-import argparse
 import json
 from pathlib import Path
 
@@ -19,6 +18,11 @@ import numpy as np
 
 
 DEMO_DIRECTORY = Path(__file__).resolve().parent
+STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild"
+PUNCTURE_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/rn_comparison_initial_mass_charge"
+RADIAL_LIMIT = 10.0  # Maximum R/M for the inner figures.
+
 VARIABLES = (
     ("alpha", r"$\alpha$"), ("beta", r"$\beta^r$"), ("chi", r"$\chi$"),
     ("conformal_grr", r"$\widetilde{\gamma}_{rr}$"),
@@ -151,13 +155,7 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--star-directory", type=Path, default=DEMO_DIRECTORY / "outputs/z4c_charged_star_schwarzschild")
-    parser.add_argument("--puncture-directory", type=Path, default=DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_initial_mass_charge")
-    parser.add_argument("--output-directory", type=Path, default=DEMO_DIRECTORY / "outputs/rn_comparison_initial_mass_charge")
-    parser.add_argument("--radial-limit", type=float, default=10.0, help="Maximum R/M for the inner figures (default: 10).")
-    args = parser.parse_args()
-    make_comparison(args.star_directory, args.puncture_directory, args.output_directory, args.radial_limit)
+    make_comparison(STAR_DIRECTORY, PUNCTURE_DIRECTORY, OUTPUT_DIRECTORY, RADIAL_LIMIT)
 
 
 if __name__ == "__main__":

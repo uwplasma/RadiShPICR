@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import argparse
 import json
 from pathlib import Path
 
@@ -14,11 +13,16 @@ from matplotlib.animation import FFMpegWriter
 from matplotlib.colors import LogNorm
 
 
-DEFAULT_OUTPUT_DIRECTORY = (
+OUTPUT_DIRECTORY = (
     Path(__file__).resolve().parent
     / "outputs"
     / "z4c_charged_star_schwarzschild"
 )
+BOUNDARY_NAME = None  # None uses the particle boundary recorded by the run.
+RADIAL_LIMIT = 15.0
+FRAME_STRIDE = 1
+FPS = 50
+MOVIES = ("bssn", "density", "electric-field")
 
 BSSN_VARIABLES = (
     ("alpha", r"lapse $\alpha$"),
@@ -252,70 +256,41 @@ def make_density_movie(snapshots, movie_path, boundary_name, radial_limit, fps):
     plt.close(figure)
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(
-        description="Render movies from a Z4c charged-star collapse run."
-    )
-    parser.add_argument(
-        "output_directory",
-        type=Path,
-        nargs="?",
-        default=DEFAULT_OUTPUT_DIRECTORY,
-    )
-    parser.add_argument(
-        "--boundary-name",
-        choices=("areal_inner_open", "full_domain_no_absorption"),
-        help="override the particle boundary recorded by the collapse run",
-    )
-    parser.add_argument("--radial-limit", type=float, default=15.0)
-    parser.add_argument("--frame-stride", type=int, default=1)
-    parser.add_argument("--fps", type=int, default=50)
-    parser.add_argument(
-        "--movies",
-        nargs="+",
-        choices=("bssn", "density", "electric-field"),
-        default=("bssn", "density", "electric-field"),
-        help="select movies to render (default: all three)",
-    )
-    return parser.parse_args()
-
-
 def main():
-    args = parse_arguments()
-    boundary_name = args.boundary_name
+    boundary_name = BOUNDARY_NAME
     if boundary_name is None:
-        boundary_name = particle_boundary_name(args.output_directory)
-    summary_path = args.output_directory / "run_summary.json"
+        boundary_name = particle_boundary_name(OUTPUT_DIRECTORY)
+    summary_path = OUTPUT_DIRECTORY / "run_summary.json"
     if summary_path.exists() and json.loads(summary_path.read_text()).get("completed") is False:
         boundary_name += " [INCOMPLETE]"
 
     snapshots = metric_snapshots(
-        args.output_directory,
-        max(1, args.frame_stride),
+        OUTPUT_DIRECTORY,
+        max(1, FRAME_STRIDE),
     )
-    if "bssn" in args.movies:
+    if "bssn" in MOVIES:
         make_bssn_movie(
             snapshots,
-            args.output_directory / "z4c_bssn_variables.mp4",
+            OUTPUT_DIRECTORY / "z4c_bssn_variables.mp4",
             boundary_name,
-            args.radial_limit,
-            args.fps,
+            RADIAL_LIMIT,
+            FPS,
         )
-    if "density" in args.movies:
+    if "density" in MOVIES:
         make_density_movie(
             snapshots,
-            args.output_directory / "z4c_spherical_density.mp4",
+            OUTPUT_DIRECTORY / "z4c_spherical_density.mp4",
             boundary_name,
-            args.radial_limit,
-            args.fps,
+            RADIAL_LIMIT,
+            FPS,
         )
-    if "electric-field" in args.movies:
+    if "electric-field" in MOVIES:
         make_electric_field_movie(
             snapshots,
-            args.output_directory / "z4c_electric_field.mp4",
+            OUTPUT_DIRECTORY / "z4c_electric_field.mp4",
             boundary_name,
-            args.radial_limit,
-            args.fps,
+            RADIAL_LIMIT,
+            FPS,
         )
 
 
