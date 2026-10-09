@@ -74,6 +74,59 @@ Omit `--movies` to render the metric, density, and electric-field movies togethe
 An optional positional output directory selects a different saved run;
 `--radial-limit`, `--frame-stride`, and `--fps` apply to all selected movies.
 
+The charged-star demo also provides a dynamical Reissner-Nordstrom puncture
+reference and final-state comparisons:
+
+```bash
+python demos/charged_star_collapse_Z4C_GR/run_reissner_nordstrom_puncture.py
+python demos/charged_star_collapse_Z4C_GR/make_comparison_plots.py
+```
+
+The reference reads the star's initial gravitational mass, physical charge,
+permittivity, half-cell grid, and gauge parameters from
+`outputs/z4c_charged_star_schwarzschild/initial_data_metadata.npz`. It uses the
+analytic single-puncture `u=1` initial data in equations (2.8)-(2.13) of
+[arXiv:1311.6483v2](https://arxiv.org/abs/1311.6483v2), with
+`q = Q / sqrt(4*pi*epsilon_0)`, `psi^2 = (1+M/(2*r))^2-q^2/(4*r^2)`, and
+the OS precollapsed lapse `alpha=psi^-2`.
+
+`electrovac_rk4_step(metric, total_charge, dt, epsilon_0=1.0, zero_shift=0,
+puncture_chi_floor=0.0)`
+keeps puncture electric flux fixed and recomputes the EM stress at each
+projected Z4C RK4 stage. There are no particles or exterior currents. The
+covariant field `E_r = Q*sqrt(chi*conformal_grr)/(4*pi*epsilon_0*r^2*conformal_gt)`
+changes as the coordinates evolve; freezing that array would not preserve
+the source-free spherical Maxwell solution. The existing particle and vacuum
+steppers are unchanged.
+
+The default duration is evolution time `t/M=150`, with CFL 0.2 and approximately
+500 saved intervals. `--input-directory`, `--output-directory`, `--duration`,
+`--cfl`, `--snapshot-count`, `--kappa`, `--eta`, `--nu`, and `--zero-shift`
+are available. Existing run directories are never overwritten. The runner
+checks every accepted step for finite fields and positive spatial geometry;
+on failure it saves the last valid state and marks the run incomplete.
+The RN runner enables `--puncture-chi-floor 1e-12` in the first three cells
+at every projected RK stage and the final update. This local regularization
+changes the discretization while active; the general electrovac API leaves
+it disabled unless requested. Use `--puncture-chi-floor 0` to disable it in
+the runner. With the saved grid and nu=0.02, the unregularized puncture develops
+negative chi before 1M. Setting nu=0 avoids that early crossing but produces
+a later instability near 27M, including at half the default time step.
+The production reference therefore retains nu=0.02 and records the local
+floor explicitly in its metadata and comparison plots.
+Bulk diagnostic norms omit three cells at each boundary; snapshots retain
+all values. The Gauss diagnostic permits nonzero flux at the puncture.
+
+The comparison script accepts `--star-directory`, `--puncture-directory`,
+`--output-directory`, and `--radial-limit` (inner figure extent, default 10M).
+It undoes the star's diagnostic coordinate rescaling, labels both actual
+time coordinates, and writes full/inner BSSN and physical comparison figures
+plus `comparison_summary.json`. The BSSN components remain gauge dependent.
+The physical panels compare the normal electric field, electric flux,
+Misner-Sharp mass, and flux-corrected RN mass against analytic RN. Charge is
+inferred from the field, not surviving particles. The initial mass is never
+fitted to the star's measured exterior geometry.
+
 The OS Z4C runner and movie renderer default to `outputs/z4c_oppenheimer_snyder`
 inside their demo directory. Explicit historical run directories remain usable.
 Initial data now use a bracketed spatial Heun shooting solve and one lapse

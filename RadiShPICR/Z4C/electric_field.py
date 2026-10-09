@@ -205,6 +205,33 @@ def compute_electrostatic_matter_terms(
     )
 
 
+def compute_electrovac_matter_terms(metric, total_charge, epsilon_0=1.0):
+    """Stress of constant spherical electric flux through a charged puncture.
+
+    With no exterior charges or currents, sqrt(gamma) E^r / sin(theta)
+    equals Q/(4*pi*epsilon_0). Thus E_r changes with the metric even though
+    Q is fixed. The puncture carries nonzero inner flux, unlike a regular
+    origin. These expressions are polynomial in chi; intermediate RK
+    stages need not take sqrt(chi) near the puncture.
+    """
+
+    chi = metric.chi
+    grr = metric.conformal_grr
+    gt = metric.conformal_gt
+    electric_stress = total_charge**2 / (
+        32.0 * jnp.pi**2 * epsilon_0 * metric.r**4 * gt**2
+    )
+    zeros = jnp.zeros_like(metric.r)
+
+    return MatterTerms(
+        rho=electric_stress * chi**2,
+        Srr=-electric_stress * chi * grr,
+        Stt=electric_stress * chi * gt,
+        Sr=zeros,
+        St=zeros,
+    )
+
+
 def electric_field_energy(metric: Z4C_Metric, E_r, epsilon_0=1.0):
     """Return the total electrostatic energy on the radial slice."""
 

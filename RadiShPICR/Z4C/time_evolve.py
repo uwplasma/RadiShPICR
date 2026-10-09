@@ -13,6 +13,7 @@ from RadiShPICR.Z4C.energy_momentum_tensor import (
     initialize_vacuum_matter_terms,
 )
 from RadiShPICR.Z4C.electric_field import (
+    compute_electrovac_matter_terms,
     compute_electrostatic_matter_terms,
     compute_radial_charge_density,
     compute_radial_lorentz_force,
@@ -167,6 +168,60 @@ def metric_rk4_step(
     weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
 
     return _add_metric_derivative(metric, weighted_derivative, dt / 6.0)
+
+
+def _floor_puncture_chi(metric, chi_floor):
+    # A centered puncture stencil can undershoot chi=0 during gauge startup.
+    # Limit only the three innermost cells, and only when explicitly enabled.
+    inner_chi = jnp.where(
+        chi_floor > 0.0,
+        jnp.maximum(metric.chi[:3], chi_floor),
+        metric.chi[:3],
+    )
+    return metric._replace(chi=metric.chi.at[:3].set(inner_chi))
+
+
+def electrovac_rk4_step(
+    metric: Z4C_Metric,
+    total_charge,
+    dt,
+    *,
+    epsilon_0=1.0,
+    zero_shift=0,
+    puncture_chi_floor=0.0,
+):
+    """Advance a charged puncture with fixed flux and stage-matched EM stress.
+
+    There are no particles, exterior charge density, or magnetic field.
+    Gauge, algebraic projections, and boundaries match metric_rk4_step.
+    A positive ``puncture_chi_floor`` additionally limits chi in the first
+    three cells at every stage and the final state. This local regularization
+    changes the discretization while active; it is disabled by default.
+    """
+
+    metric = _enforce_algebraic_constraints(metric)
+    metric = _floor_puncture_chi(metric, puncture_chi_floor)
+    matter = compute_electrovac_matter_terms(metric, total_charge, epsilon_0)
+    k1 = metric_time_derivatives(metric, matter, zero_shift=zero_shift)
+
+    metric_k2 = _add_metric_derivative(metric, k1, 0.5 * dt)
+    metric_k2 = _floor_puncture_chi(metric_k2, puncture_chi_floor)
+    matter = compute_electrovac_matter_terms(metric_k2, total_charge, epsilon_0)
+    k2 = metric_time_derivatives(metric_k2, matter, zero_shift=zero_shift)
+
+    metric_k3 = _add_metric_derivative(metric, k2, 0.5 * dt)
+    metric_k3 = _floor_puncture_chi(metric_k3, puncture_chi_floor)
+    matter = compute_electrovac_matter_terms(metric_k3, total_charge, epsilon_0)
+    k3 = metric_time_derivatives(metric_k3, matter, zero_shift=zero_shift)
+
+    metric_k4 = _add_metric_derivative(metric, k3, dt)
+    metric_k4 = _floor_puncture_chi(metric_k4, puncture_chi_floor)
+    matter = compute_electrovac_matter_terms(metric_k4, total_charge, epsilon_0)
+    k4 = metric_time_derivatives(metric_k4, matter, zero_shift=zero_shift)
+
+    weighted_derivative = _combine_rk4_derivatives(k1, k2, k3, k4)
+    metric = _add_metric_derivative(metric, weighted_derivative, dt / 6.0)
+    return _floor_puncture_chi(metric, puncture_chi_floor)
 
 
 def _metric_fields_finite(metric):
