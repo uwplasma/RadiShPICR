@@ -2,8 +2,8 @@
 
 Undo the star's diagnostic rescaling before comparing coordinate components.
 Areal radius changes the horizontal axis, not the gauge of those components.
-Electric flux, normal electric field, and geometric masses also have analytic
-RN references. No evolution or parameter fitting is performed here.
+Plot only the covariant electric field E_r and final BSSN/Z4C variables.
+No evolution or parameter fitting is performed here.
 """
 
 import argparse
@@ -27,11 +27,6 @@ VARIABLES = (
     ("AT", r"$\widetilde{A}_{T}$"), ("theta", r"$\Theta$"),
     ("Gamma", r"$\widetilde{\Gamma}^{r}$"),
 )
-PHYSICAL_VARIABLES = (
-    ("E_normal", r"$E_{\hat r}$"), ("charge_flux", r"$Q_{\rm flux}$"),
-    ("misner_sharp_mass", r"$m_{\rm MS}/M$"),
-    ("rn_mass_from_flux", r"$(m_{\rm MS}+Q_{\rm flux}^2/(8\pi\epsilon_0R))/M$"),
-)
 
 
 def read_final_snapshot(output_directory):
@@ -48,7 +43,7 @@ def read_final_snapshot(output_directory):
 
     with np.load(path) as data:
         fields = {name: np.asarray(data[name]).copy() for name in (
-            *(name for name, _ in VARIABLES), "r", "E_r", "misner_sharp_mass",
+            *(name for name, _ in VARIABLES), "r", "E_r",
         )}
         coordinates = str(data["saved_coordinates"])
         info = dict(snapshot=str(path.resolve()), saved_coordinates=coordinates,
@@ -73,67 +68,8 @@ def read_final_snapshot(output_directory):
         raise ValueError(f"Nonfinite final fields in {path}")
     if any(np.any(fields[name] <= 0.0) for name in ("chi", "conformal_grr", "conformal_gT")):
         raise ValueError(f"Nonpositive spatial geometry in {path}")
-    R = fields["r"] * np.sqrt(fields["conformal_gT"] / fields["chi"])
-    E_normal = fields["E_r"] * np.sqrt(fields["chi"] / fields["conformal_grr"])
-    charge_flux = 4.0 * np.pi * info["epsilon_0"] * R**2 * E_normal
-    fields.update(
-        areal_radius=R, E_normal=E_normal, charge_flux=charge_flux,
-        K=fields["Kh"] + 2.0 * fields["theta"],
-        rn_mass_from_flux=fields["misner_sharp_mass"] + charge_flux**2 / (8.0 * np.pi * info["epsilon_0"] * R),
-    )
+    fields["areal_radius"] = fields["r"] * np.sqrt(fields["conformal_gT"] / fields["chi"])
     return fields, info, summary
-
-
-def comparison_statistics(profiles, mass, charge, epsilon_0):
-    """Compare the monotone outer branches outside the nominal RN horizon.
-
-    Exclude three derivative-closure cells at each boundary. Field differences
-    use a common areal-radius grid and retain their evolution-coordinate gauge.
-    """
-    horizon = mass + np.sqrt(mass**2 - charge**2 / (4.0 * np.pi * epsilon_0))
-    branches = []
-    for fields in profiles:
-        R = fields["areal_radius"]
-        indices = np.arange(max(3, int(np.argmin(R))), len(R) - 3)
-        indices = indices[R[indices] >= horizon]
-        if len(indices) < 2 or np.any(np.diff(R[indices]) <= 0.0):
-            raise ValueError("Comparison statistics require a resolved monotone exterior branch.")
-        branches.append({key: value[indices] for key, value in fields.items()})
-
-    lower = max(fields["areal_radius"][0] for fields in branches)
-    upper = min(fields["areal_radius"][-1] for fields in branches)
-    result = {"nominal_RN_horizon_over_mass": float(horizon / mass)}
-    for extent, limit in (("full_exterior", upper), ("inner_exterior", min(upper, 10.0 * mass))):
-        if limit <= lower:
-            result[extent] = {"available": False}
-            continue
-        R = np.linspace(lower, limit, 1000)
-        samples = [{key: np.interp(R, fields["areal_radius"], value)
-                    for key, value in fields.items()} for fields in branches]
-        errors = {"R_over_mass_interval": [float(lower / mass), float(limit / mass)]}
-        for name, fields in zip(("charged_star", "RN_puncture"), branches):
-            # Evaluate analytic errors on native points. Interpolating 1/R^2
-            # first would manufacture an electric-field error for exact RN.
-            native_R = fields["areal_radius"]
-            mask = (native_R >= lower) & (native_R <= limit)
-            mass_error = fields["rn_mass_from_flux"][mask] / mass - 1.0
-            flux_error = fields["charge_flux"][mask] - charge
-            E_error = fields["E_normal"][mask] - charge / (4.0 * np.pi * epsilon_0 * native_R[mask]**2)
-            errors[name] = {
-                "rn_mass_relative_error_linf": float(np.max(np.abs(mass_error))),
-                "rn_mass_relative_error_rms": float(np.sqrt(np.mean(mass_error**2))),
-                "rn_mass_relative_error_mean": float(np.mean(mass_error)),
-                "charge_flux_error_linf": float(np.max(np.abs(flux_error))),
-                "normal_electric_field_error_linf": float(np.max(np.abs(E_error))),
-            }
-        errors["star_minus_puncture"] = {}
-        for key, _ in (*VARIABLES, *PHYSICAL_VARIABLES):
-            delta = samples[0][key] - samples[1][key]
-            errors["star_minus_puncture"][key] = dict(
-                linf=float(np.max(np.abs(delta))), rms=float(np.sqrt(np.mean(delta**2))),
-            )
-        result[extent] = errors
-    return result
 
 
 def make_comparison(star_directory, puncture_directory, output_directory, radial_limit=10.0):
@@ -159,17 +95,15 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
             label += " [completion unknown]"
         labels.append(label)
 
-    statistics = comparison_statistics(profiles, mass, charge, epsilon_0)
-    statistics.update(
+    summary = dict(
         mass=mass, initial_charge=charge, epsilon_0=epsilon_0,
         charged_star=datasets[0][1], RN_puncture=datasets[1][1],
+        plotted_fields=[name for name, _ in VARIABLES] + ["E_r"],
         field_comparison="evolution-coordinate components versus areal radius; no gauge transformation or mass fit",
-        mass_diagnostic="Misner-Sharp mass plus charge inferred from electric flux, not particle charge",
-        statistics_sampling="Analytic errors on native points; run differences on 1000 common areal-radius samples; three edge cells excluded",
     )
     output_directory = Path(output_directory)
     output_directory.mkdir(parents=True, exist_ok=True)
-    (output_directory / "comparison_summary.json").write_text(json.dumps(statistics, indent=2) + "\n")
+    (output_directory / "comparison_summary.json").write_text(json.dumps(summary, indent=2) + "\n")
     radii = [fields["areal_radius"] / mass for fields in profiles]
     lower = max(float(radius.min()) for radius in radii)
     upper = min(float(radius.max()) for radius in radii)
@@ -177,24 +111,17 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
     for extent, limit in (("full", upper), ("inner", min(upper, radial_limit))):
         if limit <= lower:
             raise ValueError("The requested plot range has no shared areal-radius interval.")
-        analytic_R = np.linspace(lower, limit, 1000) * mass
-        analytic = {
-            "E_normal": charge / (4.0 * np.pi * epsilon_0 * analytic_R**2),
-            "charge_flux": np.full_like(analytic_R, charge),
-            "misner_sharp_mass": mass - charge**2 / (8.0 * np.pi * epsilon_0 * analytic_R),
-            "rn_mass_from_flux": np.full_like(analytic_R, mass),
-        }
-        for kind, variables, size in (("bssn", VARIABLES, (12, 15)), ("physical", PHYSICAL_VARIABLES, (12, 8))):
-            figure, axes = plt.subplots(len(variables) // 2, 2, figsize=size, sharex=True, constrained_layout=True)
+        for kind, variables, layout, size in (
+            ("bssn", VARIABLES, (5, 2), (12, 15)),
+            ("electric_field", (("E_r", r"$E_r$"),), (1, 1), (10, 6)),
+        ):
+            figure, axes = plt.subplots(*layout, figsize=size, sharex=True,
+                                        squeeze=False, constrained_layout=True)
             for axis, (key, label) in zip(axes.flat, variables):
-                scale = mass if key in ("misner_sharp_mass", "rn_mass_from_flux") else 1.0
                 visible = []
                 for fields, radius, style, color, legend in zip(profiles, radii, ("-", "--"), ("tab:blue", "tab:orange"), labels):
-                    axis.plot(radius, fields[key] / scale, style, color=color, linewidth=1.5, label=legend)
-                    visible.append(fields[key][(radius >= lower) & (radius <= limit)] / scale)
-                if kind == "physical":
-                    axis.plot(analytic_R / mass, analytic[key] / scale, ":", color="black", label="Analytic RN, initial M and Q")
-                    visible.append(analytic[key] / scale)
+                    axis.plot(radius, fields[key], style, color=color, linewidth=1.5, label=legend)
+                    visible.append(fields[key][(radius >= lower) & (radius <= limit)])
                 values = np.concatenate(visible)
                 if values.size:
                     vmin, vmax = float(values.min()), float(values.max())
@@ -207,7 +134,7 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
             for axis in axes[-1]:
                 axis.set_xlabel(r"Areal radius $R/M$ (initial stellar mass)")
             axes[0, 0].legend(fontsize=7)
-            subtitle = "Gauge-dependent evolution-coordinate components" if kind == "bssn" else "Electric flux and geometric mass; analytic RN uses the initial M and Q"
+            subtitle = "Evolution-coordinate BSSN/Z4C components" if kind == "bssn" else "Covariant electric field in evolution coordinates"
             star_nu, rn_nu = (data[2].get("nu") for data in datasets)
             if star_nu is not None and rn_nu is not None and star_nu != rn_nu:
                 subtitle += f"\nDissipation differs: star nu={star_nu:g}, RN nu={rn_nu:g}"
@@ -220,7 +147,7 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
             plt.close(figure)
             paths.append(path)
             print(f"Saved {path}")
-    return paths, statistics
+    return paths, summary
 
 
 def main():
