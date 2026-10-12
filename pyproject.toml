@@ -22,6 +22,9 @@ dependencies = [
 test = [
     "pytest",
 ]
+openpmd = [
+    "openpmd-api",
+]
 
 [tool.setuptools.packages.find]
 include = ["RadiShPICR*"]
