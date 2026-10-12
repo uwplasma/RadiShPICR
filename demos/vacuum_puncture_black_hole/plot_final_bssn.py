@@ -1,11 +1,11 @@
 """Plot the saved final single-puncture state without rerunning the demo.
 
-Run with no arguments to read run_data.pkl beside this script. Use --r-max
-to restrict both figures to the inner part of the coordinate-radius grid.
+Run with no arguments to read the series `single_puncture.py` wrote. Use
+--r-max to restrict both figures to the inner part of the coordinate-radius
+grid.
 """
 
 import argparse
-import pickle
 import sys
 from pathlib import Path
 
@@ -16,12 +16,12 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 DEMO_DIRECTORY = Path(__file__).resolve().parent
-PACKAGE_ROOT = DEMO_DIRECTORY.parent.parent
-# The pickle contains a RadiShPICR.Z4C.z4c_metric.Z4C_Metric instance.
+PACKAGE_ROOT = DEMO_DIRECTORY.parents[1]
 if str(PACKAGE_ROOT) not in sys.path:
     sys.path.insert(0, str(PACKAGE_ROOT))
+
+from RadiShPICR.diagnostics.read_bssn import final_snapshot
 
 FIELDS = (
     ("alpha", r"$\alpha$"),
@@ -39,9 +39,7 @@ FIELDS = (
 
 def plot_final_bssn(input_path, output_directory, r_max=None):
     """Save radial field profiles and the final lapse-versus-K curve."""
-    with open(input_path, "rb") as handle:
-        run_data = pickle.load(handle)
-    metric = run_data["final_metric"]
+    metric = final_snapshot(input_path, with_particles=False).metric
     r = np.asarray(metric.r)
     fields = {name: np.asarray(getattr(metric, name)) for name, _ in FIELDS}
 
@@ -93,7 +91,7 @@ def plot_final_bssn(input_path, output_directory, r_max=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path,
-                        default=DEMO_DIRECTORY / "run_data.pkl")
+                        default=DEMO_DIRECTORY / "outputs/vacuum_single_puncture")
     parser.add_argument("--output-dir", type=Path, default=DEMO_DIRECTORY)
     parser.add_argument("--r-max", type=float, default=None,
                         help="Maximum coordinate radius included in both figures.")

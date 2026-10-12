@@ -28,9 +28,27 @@ Layout:
     and ``position=[0.5]``, since ``generate_r_grid`` places the samples at cell
     centres, ``r_i = (i + 1/2) dr``.
 
+    Particles, when a run has them, become one openPMD species per
+    ``particle_species``: the vector records ``position`` and ``momentum`` with
+    the components ``r`` and ``phi``, the scalar ``weighting``, a zero
+    ``positionOffset``, and ``charge``/``mass`` of one physical particle.  The
+    momentum is the one the pusher advances, the covariant ``(u_r, u_phi)``.
+    Each species carries the attribute ``shapeMode``, which a reader needs in
+    order to re-deposit densities from the particles.
+
+    Per-particle areal radius and orthonormal momentum are deliberately absent.
+    They are a pure function of the species and the metric in the same
+    iteration, so they belong to whatever reads the series.
+
     Everything is geometric units (G = c = 1), so ``unitSI`` is 1 and the
     ``unitDimension`` of every record is empty.  The series records this as the
     attribute ``unitSystem``.
+
+Run metadata:
+    The scalars describing a run -- masses, charges, damping parameters, the
+    boundary choice, whether it finished -- are series attributes rather than a
+    companion file.  Pass them to the constructor and add to them later with
+    :meth:`BSSNFieldSeries.set_metadata`.
 """
 
 from pathlib import Path
@@ -85,7 +103,7 @@ class BSSNFieldSeries:
         ImportError: If the optional dependency ``openpmd-api`` is missing.
     """
 
-    def __init__(self, output_folder, filename="bssn_fields.h5"):
+    def __init__(self, output_folder, filename="bssn_fields.h5", metadata=None):
         try:
             import openpmd_api as io
         except ImportError as exc:
@@ -104,6 +122,27 @@ class BSSNFieldSeries:
         self._series.set_attribute("unitSystem", "geometric (G=c=1)")
         self._series.set_attribute("savedCoordinates", "evolution")
         self._series.set_attribute("radialCoordinate", "areal_radius")
+        if metadata:
+            self.set_metadata(**metadata)
+
+    def set_metadata(self, **entries):
+        """Record run metadata as series attributes.
+
+        This stands in for the ``run_summary.json`` and
+        ``initial_data_metadata.npz`` files the demos used to write, so it can
+        be called before the run to stamp its parameters and again at the end
+        for ``completed`` and whatever the run only knows once it is over.
+        Values must be the scalar types openPMD stores: ``bool``, ``int``,
+        ``float`` or ``str``.
+        """
+
+        for name, value in entries.items():
+            if isinstance(value, (bool, int, float, str)):
+                self._series.set_attribute(name, value)
+            elif value is None:
+                continue
+            else:
+                self._series.set_attribute(name, float(value))
 
     def _store(self, mesh, values, dr, keep, provided=None):
         """Describe one scalar mesh on the radial grid and stage its data.
@@ -136,7 +175,80 @@ class BSSNFieldSeries:
         component.unit_SI = 1.0
         keep.append(data)
 
-    def write(self, metric, step, time=None, dt=None, E_r=None, charge_density=None):
+    def _store_component(self, component, values, keep, count=None):
+        """Stage one record component, as a constant when ``values`` is scalar."""
+
+        io = self._io
+        data = np.array(values, dtype=np.float64, order="C")
+        if data.ndim == 0:
+            component.reset_dataset(io.Dataset(data.dtype, [int(count)]))
+            component.make_constant(float(data))
+        else:
+            component.reset_dataset(io.Dataset(data.dtype, data.shape))
+            component.store_chunk(data)
+            keep.append(data)
+        component.unit_SI = 1.0
+
+    def _store_species(self, species, particles, keep):
+        """Write one ``particle_species`` as an openPMD species."""
+
+        io = self._io
+        count = int(np.size(np.asarray(particles.r)))
+        species.set_attribute("shapeMode", str(particles.get_shape()))
+
+        vectors = (
+            ("position", (particles.r, particles.phi)),
+            ("momentum", (particles.ur, particles.uphi)),
+        )
+        for record_name, components in vectors:
+            record = species[record_name]
+            record.unit_dimension = {}
+            record.set_attribute("macroWeighted", np.uint32(0))
+            record.set_attribute(
+                "weightingPower", 0.0 if record_name == "position" else 1.0
+            )
+            for label, values in zip("r phi".split(), components):
+                self._store_component(record[label], values, keep, count)
+
+        offset = species["positionOffset"]
+        offset.unit_dimension = {}
+        offset.set_attribute("macroWeighted", np.uint32(0))
+        offset.set_attribute("weightingPower", 0.0)
+        for label in ("r", "phi"):
+            self._store_component(offset[label], 0.0, keep, count)
+
+        weighting = species["weighting"]
+        weighting.unit_dimension = {}
+        weighting.set_attribute("macroWeighted", np.uint32(1))
+        weighting.set_attribute("weightingPower", 1.0)
+        self._store_component(
+            weighting[io.Record_Component.SCALAR], particles.weight, keep, count
+        )
+
+        # charge and mass of one physical particle, constant when the species
+        # was built with scalars.
+        for record_name, values in (
+            ("charge", particles.charges),
+            ("mass", particles.masses),
+        ):
+            record = species[record_name]
+            record.unit_dimension = {}
+            record.set_attribute("macroWeighted", np.uint32(0))
+            record.set_attribute("weightingPower", 1.0)
+            self._store_component(
+                record[io.Record_Component.SCALAR], values, keep, count
+            )
+
+    def write(
+        self,
+        metric,
+        step,
+        time=None,
+        dt=None,
+        E_r=None,
+        charge_density=None,
+        particles=None,
+    ):
         """Write one iteration holding the current ``Z4C_Metric`` fields.
 
         Nothing passed in is modified, so this can be called after any timestep
@@ -155,6 +267,9 @@ class BSSNFieldSeries:
                 is then zeros marked ``provided = False``.
             charge_density: Eulerian charge density on the same cell centers,
                 with the same zero fill when it is left out.
+            particles: One ``particle_species`` or a sequence of them, written
+                as openPMD species under this iteration.  A run without
+                particles leaves this out and the iteration carries none.
 
         Returns:
             The path of the series being written.
@@ -188,6 +303,13 @@ class BSSNFieldSeries:
                 keep,
                 provided=provided,
             )
+
+        if particles is not None:
+            species_list = (
+                particles if isinstance(particles, (list, tuple)) else [particles]
+            )
+            for one in species_list:
+                self._store_species(iteration.particles[one.name], one, keep)
         self._series.flush()
 
         return self.path

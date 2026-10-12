@@ -1,12 +1,13 @@
 """Compare saved charged-star and evolved RN puncture final states.
 
-Undo diagnostic rescaling only for historical Schwarzschild-chart snapshots.
-Areal radius changes the horizontal axis, not the gauge of those components.
-Plot only the covariant electric field E_r and final BSSN/Z4C variables.
-No evolution or parameter fitting is performed here.
+Both runs are saved in evolution coordinates; areal radius changes the
+horizontal axis, not the gauge of those components.  Plots the covariant
+electric field E_r and the final BSSN/Z4C variables.  No evolution or
+parameter fitting is performed here.
 """
 
 import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -18,6 +19,12 @@ import numpy as np
 
 
 DEMO_DIRECTORY = Path(__file__).resolve().parent
+PACKAGE_ROOT = DEMO_DIRECTORY.parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from RadiShPICR.diagnostics.read_bssn import final_snapshot, read_metadata
+
 STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
 PUNCTURE_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_evolution_300M"
 OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/rn_comparison_evolution_300M"
@@ -26,60 +33,48 @@ RADIAL_LIMIT = 10.0  # Maximum R/M for the inner figures.
 VARIABLES = (
     ("alpha", r"$\alpha$"), ("beta", r"$\beta^r$"), ("chi", r"$\chi$"),
     ("conformal_grr", r"$\widetilde{\gamma}_{rr}$"),
-    ("conformal_gT", r"$\widetilde{\gamma}_{T}$"),
+    ("conformal_gt", r"$\widetilde{\gamma}_{T}$"),
     ("Kh", r"$\widehat{K}$"), ("Arr", r"$\widetilde{A}_{rr}$"),
-    ("AT", r"$\widetilde{A}_{T}$"), ("theta", r"$\Theta$"),
+    ("At", r"$\widetilde{A}_{T}$"), ("theta", r"$\Theta$"),
     ("Gamma", r"$\widetilde{\Gamma}^{r}$"),
 )
 
 
-def read_final_snapshot(output_directory):
-    output_directory = Path(output_directory)
-    summary_path = output_directory / "run_summary.json"
-    summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
-    if "final_step" in summary:
-        path = output_directory / "metric" / f"metric_step_{summary['final_step']:06d}.npz"
-    else:
-        snapshots = sorted((output_directory / "metric").glob("metric_step_*.npz"))
-        if not snapshots:
-            raise RuntimeError(f"No metric snapshots in {output_directory}")
-        path = snapshots[-1]
+def read_final_profiles(run_directory):
+    """Return the last state of a run, with its labels and run metadata."""
+    snapshot = final_snapshot(run_directory, with_particles=False)
+    metadata = read_metadata(run_directory)
 
-    with np.load(path) as data:
-        fields = {name: np.asarray(data[name]).copy() for name in (
-            *(name for name, _ in VARIABLES), "r", "E_r",
-        )}
-        coordinates = str(data["saved_coordinates"])
-        info = dict(snapshot=str(path.resolve()), saved_coordinates=coordinates,
-                    time=float(data["time"]), evolution_time=float(data["evolution_time"]),
-                    epsilon_0=float(data["epsilon_0"]), completed=summary.get("completed"),
-                    evolution_parameters={key: summary.get(key) for key in (
-                        "kappa", "eta", "nu", "zero_shift", "cfl",
-                        "puncture_chi_floor", "puncture_chi_floor_cells",
-                    )})
-        if coordinates == "schwarzschild_isotropic_diagnostic":
-            X_r, X_t = float(data["X_r"]), float(data["X_t"])
-            fields["r"] /= X_r
-            fields["alpha"] *= X_t
-            fields["beta"] *= X_t / X_r
-            fields["chi"] /= X_r**2
-            fields["Gamma"] *= X_r
-            fields["E_r"] *= X_r
-        elif coordinates != "evolution":
-            raise ValueError(f"Unsupported saved coordinates: {coordinates}")
+    fields = {name: np.asarray(getattr(snapshot.metric, name))
+              for name, _ in VARIABLES}
+    fields["r"] = np.asarray(snapshot.metric.r)
+    fields["E_r"] = np.asarray(snapshot.E_r)
+    fields["areal_radius"] = np.asarray(snapshot.areal_radius)
 
     if not all(np.all(np.isfinite(value)) for value in fields.values()):
-        raise ValueError(f"Nonfinite final fields in {path}")
-    if any(np.any(fields[name] <= 0.0) for name in ("chi", "conformal_grr", "conformal_gT")):
-        raise ValueError(f"Nonpositive spatial geometry in {path}")
-    fields["areal_radius"] = fields["r"] * np.sqrt(fields["conformal_gT"] / fields["chi"])
-    return fields, info, summary
+        raise ValueError(f"Nonfinite final fields in {run_directory}")
+    if any(np.any(fields[name] <= 0.0)
+           for name in ("chi", "conformal_grr", "conformal_gt")):
+        raise ValueError(f"Nonpositive spatial geometry in {run_directory}")
+
+    info = dict(
+        run=str(Path(run_directory).resolve()),
+        time=snapshot.time, epsilon_0=float(metadata["epsilon_0"]),
+        completed=metadata.get("completed"),
+        evolution_parameters={key: metadata.get(key) for key in (
+            "kappa", "eta", "nu", "zero_shift", "cfl",
+            "puncture_chi_floor", "puncture_chi_floor_cells",
+        )},
+    )
+
+    return fields, info, metadata
 
 
 def make_comparison(star_directory, puncture_directory, output_directory, radial_limit=10.0):
-    with np.load(Path(star_directory) / "initial_data_metadata.npz") as initial:
-        mass, charge, epsilon_0 = (float(initial[key]) for key in ("total_mass", "initial_charge", "epsilon_0"))
-    datasets = [read_final_snapshot(directory) for directory in (star_directory, puncture_directory)]
+    datasets = [read_final_profiles(directory)
+                for directory in (star_directory, puncture_directory)]
+    mass, charge, epsilon_0 = (float(datasets[0][2][key]) for key in
+                               ("total_mass", "initial_charge", "epsilon_0"))
     profiles = [data[0] for data in datasets]
     puncture_summary = datasets[1][2]
     if (puncture_summary.get("mass_source") != "initial_gravitational_mass"
@@ -90,9 +85,7 @@ def make_comparison(star_directory, puncture_directory, output_directory, radial
 
     labels = []
     for name, (_, info, _) in zip(("Charged star", "RN puncture"), datasets):
-        label = f"{name}: Z4C t/M={info['evolution_time'] / mass:.5f}"
-        if info["saved_coordinates"] != "evolution":
-            label += f", diagnostic t/M={info['time'] / mass:.5f}"
+        label = f"{name}: Z4C t/M={info['time'] / mass:.5f}"
         if info["completed"] is False:
             label += " [INCOMPLETE]"
         elif info["completed"] is None:

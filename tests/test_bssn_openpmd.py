@@ -184,3 +184,96 @@ def test_evolved_fields_carry_no_provided_attribute(tmp_path):
     for name in (*FIELD_NAMES, "r", "areal_radius"):
         assert not meshes[name].contains_attribute("provided")
     series.close()
+
+
+def build_particles():
+    """Two species with distinct arrays, so a mix-up between them fails."""
+
+    from RadiShPICR.particles import particle_species
+
+    dust = particle_species(
+        name="dust", charge=-1.0e-3, mass=2.0e-3,
+        weight=jnp.asarray([1.0, 2.0, 3.0]),
+        r=jnp.asarray([0.2, 0.4, 0.6]), ur=jnp.asarray([0.01, -0.02, 0.03]),
+        phi=jnp.asarray([0.0, 1.0, 2.0]), uphi=jnp.asarray([0.0, 0.0, 0.1]),
+        shape_mode="quadratic",
+    )
+    ions = particle_species(
+        name="ions", charge=5.0e-4, mass=7.0e-3,
+        weight=jnp.asarray([4.0, 5.0]),
+        r=jnp.asarray([0.3, 0.7]), ur=jnp.asarray([-0.05, 0.06]),
+        phi=jnp.asarray([3.0, 4.0]), uphi=jnp.asarray([0.2, 0.3]),
+        shape_mode="linear",
+    )
+    return dust, ions
+
+
+def test_particles_round_trip_with_shape_mode(tmp_path):
+    metric = build_metric()
+    dust, ions = build_particles()
+
+    with BSSNFieldSeries(tmp_path) as fields:
+        output_path = fields.write(metric, step=0, time=0.0, particles=[dust, ions])
+
+    series = read_series(output_path)
+    species = series.iterations[0].particles
+    assert sorted(species) == ["dust", "ions"]
+
+    written = species["dust"]
+    chunks = {
+        "position_r": written["position"]["r"].load_chunk(),
+        "position_phi": written["position"]["phi"].load_chunk(),
+        "momentum_r": written["momentum"]["r"].load_chunk(),
+        "momentum_phi": written["momentum"]["phi"].load_chunk(),
+        "weighting": written["weighting"][io.Record_Component.SCALAR].load_chunk(),
+        "charge": written["charge"][io.Record_Component.SCALAR].load_chunk(),
+        "mass": written["mass"][io.Record_Component.SCALAR].load_chunk(),
+        "offset": written["positionOffset"]["r"].load_chunk(),
+    }
+    series.flush()
+
+    # shapeMode is load-bearing: a reader needs it to re-deposit densities.
+    assert written.get_attribute("shapeMode") == "quadratic"
+    assert species["ions"].get_attribute("shapeMode") == "linear"
+
+    assert np.array_equal(chunks["position_r"], np.asarray(dust.r))
+    assert np.array_equal(chunks["position_phi"], np.asarray(dust.phi))
+    assert np.array_equal(chunks["momentum_r"], np.asarray(dust.ur))
+    assert np.array_equal(chunks["momentum_phi"], np.asarray(dust.uphi))
+    assert np.array_equal(chunks["weighting"], np.asarray(dust.weight))
+    # charge and mass are of one physical particle, written as constants.
+    assert np.allclose(chunks["charge"], -1.0e-3)
+    assert np.allclose(chunks["mass"], 2.0e-3)
+    assert np.array_equal(chunks["offset"], np.zeros(3))
+    series.close()
+
+
+def test_iterations_without_particles_carry_none(tmp_path):
+    metric = build_metric()
+
+    with BSSNFieldSeries(tmp_path) as fields:
+        output_path = fields.write(metric, step=0, time=0.0)
+
+    series = read_series(output_path)
+    assert list(series.iterations[0].particles) == []
+    series.close()
+
+
+def test_metadata_is_written_as_series_attributes(tmp_path):
+    metric = build_metric()
+
+    with BSSNFieldSeries(
+        tmp_path, metadata=dict(total_mass=1.0, zero_shift=0, boundary="areal_inner_open")
+    ) as fields:
+        output_path = fields.write(metric, step=0, time=0.0)
+        # set_metadata works after iterations exist, for end-of-run bookkeeping.
+        fields.set_metadata(completed=True, final_step=0, skipped=None)
+
+    series = read_series(output_path)
+    assert series.get_attribute("total_mass") == pytest.approx(1.0)
+    assert series.get_attribute("zero_shift") == 0
+    assert series.get_attribute("boundary") == "areal_inner_open"
+    assert series.get_attribute("completed") is True
+    assert series.get_attribute("final_step") == 0
+    assert not series.contains_attribute("skipped")
+    series.close()

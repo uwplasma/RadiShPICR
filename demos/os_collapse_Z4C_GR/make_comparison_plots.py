@@ -1,12 +1,12 @@
 """Overlay final OS and initial-mass Schwarzschild fields against areal radius.
 
 Run after run_schwarzschild_puncture.py. Use --radial-limit to restrict R/M.
-The OS diagnostic rescaling is reversed; the field components retain their
-evolution-coordinate definitions when plotted against areal radius.
+Both runs are saved in evolution coordinates; areal radius only changes the
+horizontal axis.
 """
 
 import argparse
-import json
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -16,65 +16,51 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 
-
 DEMO_DIRECTORY = Path(__file__).resolve().parent
+PACKAGE_ROOT = DEMO_DIRECTORY.parents[1]
+if str(PACKAGE_ROOT) not in sys.path:
+    sys.path.insert(0, str(PACKAGE_ROOT))
+
+from RadiShPICR.diagnostics.read_bssn import final_snapshot, read_metadata
+
 VARIABLES = (
     ("alpha", r"$\alpha$"),
     ("beta", r"$\beta^r$"),
     ("chi", r"$\chi$"),
     ("conformal_grr", r"$\widetilde{\gamma}_{rr}$"),
-    ("conformal_gT", r"$\widetilde{\gamma}_{T}$"),
+    ("conformal_gt", r"$\widetilde{\gamma}_{T}$"),
     ("Kh", r"$\widehat{K}$"),
     ("Arr", r"$\widetilde{A}_{rr}$"),
-    ("AT", r"$\widetilde{A}_{T}$"),
+    ("At", r"$\widetilde{A}_{T}$"),
     ("theta", r"$\Theta$"),
     ("Gamma", r"$\widetilde{\Gamma}^{r}$"),
 )
 
 
-def read_final_snapshot(output_directory):
-    """Read the recorded final step, or the latest saved step without a summary."""
-    output_directory = Path(output_directory)
-    summary_path = output_directory / "run_summary.json"
-    summary = json.loads(summary_path.read_text()) if summary_path.exists() else {}
-    if "final_step" in summary:
-        path = output_directory / "metric" / f"metric_step_{summary['final_step']:06d}.npz"
-    else:
-        snapshots = sorted((output_directory / "metric").glob("metric_step_*.npz"))
-        if not snapshots:
-            raise RuntimeError(f"No metric snapshots found in {output_directory}")
-        path = snapshots[-1]
+def read_final_profiles(run_directory):
+    """Return the last state of a run, with its time and run metadata."""
+    snapshot = final_snapshot(run_directory, with_particles=False)
+    metadata = read_metadata(run_directory)
 
-    with np.load(path) as snapshot:
-        fields = {name: snapshot[name] for name, _ in VARIABLES}
-        r = snapshot["r"]
-        coordinates = str(snapshot["saved_coordinates"])
-        time = float(snapshot["time"])
-        if coordinates == "schwarzschild_isotropic_diagnostic":
-            X_r, X_t = float(snapshot["X_r"]), float(snapshot["X_t"])
-            r = r / X_r
-            fields["alpha"] *= X_t
-            fields["beta"] *= X_t / X_r
-            fields["chi"] /= X_r**2
-            fields["Gamma"] *= X_r
-        elif coordinates != "evolution":
-            raise ValueError(f"Unsupported saved coordinates: {coordinates}")
+    fields = {name: np.asarray(getattr(snapshot.metric, name))
+              for name, _ in VARIABLES}
+    fields["r"] = np.asarray(snapshot.metric.r)
+    fields["areal_radius"] = np.asarray(snapshot.areal_radius)
 
-    if not all(np.all(np.isfinite(value)) for value in (r, *fields.values())):
-        raise ValueError(f"Nonfinite final fields in {path}")
-    if any(np.any(fields[name] <= 0.0) for name in ("chi", "conformal_grr", "conformal_gT")):
-        raise ValueError(f"Nonpositive spatial geometry in {path}")
-    fields["r"] = r
-    fields["areal_radius"] = r * np.sqrt(fields["conformal_gT"] / fields["chi"])
-    return fields, time, coordinates, summary
+    if not all(np.all(np.isfinite(value)) for value in fields.values()):
+        raise ValueError(f"Nonfinite final fields in {run_directory}")
+    if any(np.any(fields[name] <= 0.0)
+           for name in ("chi", "conformal_grr", "conformal_gt")):
+        raise ValueError(f"Nonpositive spatial geometry in {run_directory}")
+
+    return fields, snapshot.time, metadata
 
 
 def make_comparison(os_directory, puncture_directory, output_directory, radial_limit=None):
-    with np.load(Path(os_directory) / "initial_data_metadata.npz") as initial:
-        mass = float(initial["total_mass"])
-    os_data = read_final_snapshot(os_directory)
-    puncture_data = read_final_snapshot(puncture_directory)
-    puncture_summary = puncture_data[3]
+    os_data = read_final_profiles(os_directory)
+    puncture_data = read_final_profiles(puncture_directory)
+    mass = float(os_data[2]["total_mass"])
+    puncture_summary = puncture_data[2]
     if (not np.isfinite(mass) or mass <= 0.0
             or puncture_summary.get("mass_source") != "initial_gravitational_mass"
             or not np.isclose(puncture_summary["mass"], mass, rtol=1e-12, atol=0.0)):
@@ -90,7 +76,7 @@ def make_comparison(os_directory, puncture_directory, output_directory, radial_l
         raise ValueError("The requested range has no shared areal-radius interval.")
 
     labels = []
-    for name, (_, time, coordinates, summary) in zip(
+    for name, (_, time, summary) in zip(
         ("OS collapse", "Schwarzschild puncture"), (os_data, puncture_data),
     ):
         status = ""
@@ -98,8 +84,7 @@ def make_comparison(os_directory, puncture_directory, output_directory, radial_l
             status = " [INCOMPLETE]"
         elif summary.get("completed") is None:
             status = " [completion unknown]"
-        time_label = "evolution" if coordinates == "evolution" else "diagnostic"
-        labels.append(f"{name}: {time_label} t/M = {time / mass:.5f}{status}")
+        labels.append(f"{name}: evolution t/M = {time / mass:.5f}{status}")
 
     figure, axes = plt.subplots(5, 2, figsize=(12, 15), sharex=True,
                                 constrained_layout=True)
