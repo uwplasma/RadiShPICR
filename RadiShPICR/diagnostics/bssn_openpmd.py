@@ -10,6 +10,14 @@ Layout:
     ``chi``, ``Kh``, ``Arr``, ``At``, ``theta`` and ``Gamma`` on the radial grid,
     plus the two coordinate records ``r`` and ``areal_radius``.
 
+    The electromagnetic sources ``E_r`` and ``charge_density`` are written
+    alongside them.  ``E_r`` is the *covariant* radial component
+    :math:`E_r = \\gamma_{rr} E^r` that the RK stages carry, not the orthonormal
+    one; both sit on the same cell centres as the metric fields.  A vacuum or
+    metric-only run has neither, so they are filled with zeros and marked with
+    the record attribute ``provided = False``.  Every iteration of every series
+    therefore holds the same set of records.
+
     The radial coordinate of the output is the areal radius
     :math:`R = r\\sqrt{\\tilde\\gamma_T/\\chi}`, which is neither uniform nor
     constant in time, so it cannot be an openPMD mesh axis.  It is written as its
@@ -29,7 +37,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["BSSNFieldSeries", "FIELD_NAMES"]
+__all__ = ["BSSNFieldSeries", "FIELD_NAMES", "SOURCE_NAMES"]
 
 FIELD_NAMES = (
     "alpha",
@@ -43,6 +51,8 @@ FIELD_NAMES = (
     "theta",
     "Gamma",
 )
+
+SOURCE_NAMES = ("E_r", "charge_density")
 
 
 def _package_version():
@@ -95,8 +105,12 @@ class BSSNFieldSeries:
         self._series.set_attribute("savedCoordinates", "evolution")
         self._series.set_attribute("radialCoordinate", "areal_radius")
 
-    def _store(self, mesh, values, dr, keep):
-        """Describe one scalar mesh on the radial grid and stage its data."""
+    def _store(self, mesh, values, dr, keep, provided=None):
+        """Describe one scalar mesh on the radial grid and stage its data.
+
+        ``provided`` marks a record the caller may leave out: ``False`` says the
+        values are a zero fill rather than a field the run actually carried.
+        """
 
         io = self._io
 
@@ -107,6 +121,8 @@ class BSSNFieldSeries:
         mesh.grid_unit_SI = 1.0
         mesh.unit_dimension = {}
         mesh.set_attribute("coordinateRecord", "areal_radius")
+        if provided is not None:
+            mesh.set_attribute("provided", np.bool_(provided))
 
         # np.array copies, which matters twice: a JAX array converts to a
         # read-only buffer that store_chunk refuses, and the buffer has to stay
@@ -120,11 +136,12 @@ class BSSNFieldSeries:
         component.unit_SI = 1.0
         keep.append(data)
 
-    def write(self, metric, step, time=None, dt=None):
+    def write(self, metric, step, time=None, dt=None, E_r=None, charge_density=None):
         """Write one iteration holding the current ``Z4C_Metric`` fields.
 
-        The metric is read, never modified, so this can be called after any
-        timestep in a loop.
+        Nothing passed in is modified, so this can be called after any timestep
+        in a loop.  ``rk4_step`` returns ``(particles, metric, charge_density,
+        E_r)``, so the two source arrays come straight off the same call.
 
         Args:
             metric: A ``Z4C_Metric``; its fields are written as they stand.
@@ -133,6 +150,11 @@ class BSSNFieldSeries:
             dt: Timestep to record on the iteration.  The snapshot cadence is
                 not the timestep, so this is ``0.0`` unless the caller supplies
                 the real one.
+            E_r: Covariant radial electric field on the metric's cell centers,
+                written unscaled.  A vacuum run leaves this out, and the record
+                is then zeros marked ``provided = False``.
+            charge_density: Eulerian charge density on the same cell centers,
+                with the same zero fill when it is left out.
 
         Returns:
             The path of the series being written.
@@ -156,6 +178,16 @@ class BSSNFieldSeries:
             self._store(iteration.meshes[name], getattr(metric, name), metric.dr, keep)
         self._store(iteration.meshes["r"], radius, metric.dr, keep)
         self._store(iteration.meshes["areal_radius"], areal_radius, metric.dr, keep)
+
+        for name, values in zip(SOURCE_NAMES, (E_r, charge_density)):
+            provided = values is not None
+            self._store(
+                iteration.meshes[name],
+                values if provided else np.zeros_like(radius),
+                metric.dr,
+                keep,
+                provided=provided,
+            )
         self._series.flush()
 
         return self.path

@@ -5,12 +5,14 @@ import jax.numpy as jnp
 io = pytest.importorskip("openpmd_api")
 
 from RadiShPICR.diagnostics import BSSNFieldSeries
-from RadiShPICR.diagnostics.bssn_openpmd import FIELD_NAMES
+from RadiShPICR.diagnostics.bssn_openpmd import FIELD_NAMES, SOURCE_NAMES
 from RadiShPICR.Z4C import Z4C_Metric
 
 
 DR = 0.25
 R_GRID = jnp.asarray([0.125, 0.375, 0.625, 0.875])
+E_R = jnp.asarray([0.041, 0.123, 0.205, 0.287])
+CHARGE_DENSITY = jnp.asarray([3.3, 3.1, 0.0, 0.0])
 
 
 def build_metric():
@@ -44,7 +46,9 @@ def test_series_writes_every_evolved_field_unchanged(tmp_path):
     metric = build_metric()
 
     with BSSNFieldSeries(tmp_path) as fields:
-        output_path = fields.write(metric, step=0, time=0.0)
+        output_path = fields.write(
+            metric, step=0, time=0.0, E_r=E_R, charge_density=CHARGE_DENSITY,
+        )
         fields.write(metric, step=10, time=0.5)
 
     assert output_path.name == "bssn_fields.h5"
@@ -53,7 +57,7 @@ def test_series_writes_every_evolved_field_unchanged(tmp_path):
     assert sorted(series.iterations) == [0, 10]
 
     iteration = series.iterations[0]
-    expected_records = set(FIELD_NAMES) | {"r", "areal_radius"}
+    expected_records = set(FIELD_NAMES) | set(SOURCE_NAMES) | {"r", "areal_radius"}
     assert set(iteration.meshes) == expected_records
 
     chunks = {
@@ -66,6 +70,8 @@ def test_series_writes_every_evolved_field_unchanged(tmp_path):
     for name in FIELD_NAMES:
         assert np.array_equal(chunks[name], np.asarray(getattr(metric, name)))
     assert np.array_equal(chunks["r"], np.asarray(metric.r))
+    assert np.array_equal(chunks["E_r"], np.asarray(E_R))
+    assert np.array_equal(chunks["charge_density"], np.asarray(CHARGE_DENSITY))
     series.close()
 
 
@@ -121,4 +127,60 @@ def test_missing_time_is_written_as_nan(tmp_path):
 
     series = read_series(output_path)
     assert np.isnan(series.iterations[0].time)
+    series.close()
+
+
+def test_source_records_are_zero_filled_when_absent(tmp_path):
+    metric = build_metric()
+
+    with BSSNFieldSeries(tmp_path) as fields:
+        output_path = fields.write(metric, step=0, time=0.0)
+
+    series = read_series(output_path)
+    meshes = series.iterations[0].meshes
+    chunks = {name: meshes[name][io.Mesh.SCALAR].load_chunk() for name in SOURCE_NAMES}
+    series.flush()
+
+    # A vacuum run still carries the records, flagged as a zero fill.
+    for name in SOURCE_NAMES:
+        assert meshes[name].get_attribute("provided") is False
+        assert np.array_equal(chunks[name], np.zeros_like(np.asarray(metric.r)))
+    series.close()
+
+
+def test_source_records_are_marked_provided_and_left_unscaled(tmp_path):
+    metric = build_metric()
+
+    with BSSNFieldSeries(tmp_path) as fields:
+        output_path = fields.write(
+            metric, step=0, time=0.0, E_r=E_R, charge_density=CHARGE_DENSITY,
+        )
+
+    series = read_series(output_path)
+    meshes = series.iterations[0].meshes
+    electric_field = meshes["E_r"][io.Mesh.SCALAR].load_chunk()
+    charge_density = meshes["charge_density"][io.Mesh.SCALAR].load_chunk()
+    series.flush()
+
+    for name in SOURCE_NAMES:
+        assert meshes[name].get_attribute("provided") is True
+        assert meshes[name][io.Mesh.SCALAR].position == [pytest.approx(0.5)]
+        assert list(meshes[name][io.Mesh.SCALAR].shape) == [len(R_GRID)]
+
+    # The covariant E_r goes out exactly as handed in; no X_r rescaling.
+    assert np.array_equal(electric_field, np.asarray(E_R))
+    assert np.array_equal(charge_density, np.asarray(CHARGE_DENSITY))
+    series.close()
+
+
+def test_evolved_fields_carry_no_provided_attribute(tmp_path):
+    metric = build_metric()
+
+    with BSSNFieldSeries(tmp_path) as fields:
+        output_path = fields.write(metric, step=0, time=0.0)
+
+    series = read_series(output_path)
+    meshes = series.iterations[0].meshes
+    for name in (*FIELD_NAMES, "r", "areal_radius"):
+        assert not meshes[name].contains_attribute("provided")
     series.close()
