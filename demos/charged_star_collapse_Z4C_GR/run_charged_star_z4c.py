@@ -1,8 +1,8 @@
 """Charged Oppenheimer-Snyder collapse in Z4C with a self-consistent E field.
 
 A homogeneous dust sphere carrying uniform charge-to-mass ratio, seeded from
-the constrained Heun shoot with charged sources and matched to Schwarzschild
-at the outer boundary, then evolved in Z4C evolution time.
+a completed-map constrained lapse. The production-grid Hamiltonian solve
+fixes gravitational mass and charge through an RN exterior before evolution.
 
 Snapshots hold raw state -- metric, E_r, charge density, particles -- in one
 openPMD series.  Diagnostics are recomputed from it by the plotting scripts.
@@ -26,16 +26,14 @@ import jax.numpy as jnp
 from tqdm import tqdm
 
 from RadiShPICR.ConstraintBasedRelativity import build_radial_grid
-from RadiShPICR.ConstraintBasedRelativity.geodesic import isotropic_particle_radius
 from RadiShPICR.diagnostics import BSSNFieldSeries
 from RadiShPICR.initial_data import (
     constrained_state_to_z4c,
     initial_center_A,
     initialize_oppenheimer_snyder_particles,
     shoot_constrained_schwarzschild_initial_data,
+    solve_star_initial_data,
 )
-from RadiShPICR.initial_data.oppenheimer_snyder import SHOOTING_METHOD
-from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.electric_field import (
     compute_radial_charge_density,
     solve_radial_electric_field,
@@ -47,10 +45,10 @@ from RadiShPICR.Z4C.particle_boundaries import (
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.utils import freefall_collapse_time_step
 
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M_consistent_initial_data"
 
 MASS_SCALE = 1.0  # Initial gravitational mass for the seed and normalization.
-CHARGE_TO_MASS = 0.2  # Signed Q_geom / stellar rest mass.
+CHARGE_TO_MASS = 0.2  # Signed Q_geom / seed rest mass, before mass calibration.
 SURFACE_AREAL_RADIUS = 10.0
 EPSILON_0 = 1.0  # G=c=epsilon_0=1, as in the constrained Heun solver.
 
@@ -75,7 +73,7 @@ rk4_step_jit = jax.jit(rk4_step, static_argnames=("particle_boundary",))
 
 
 def build_initial_state():
-    """Use the OS Heun shoot with charged sources and Schwarzschild matching."""
+    """Solve consistent charged-star data at the prescribed mass and charge."""
 
     grid = build_radial_grid(R_MAX, NUM_CELLS + 1)
     density = MASS_SCALE / ((4.0 / 3.0) * jnp.pi * SURFACE_AREAL_RADIUS**3)
@@ -86,24 +84,21 @@ def build_initial_state():
     )
     particles.charges = jnp.asarray(CHARGE_TO_MASS * np.sqrt(4.0 * np.pi))
 
-    # The Heun equations include E_r, its energy, and radial tension. Only the
-    # outer coordinate normalization is Schwarzschild (charge argument zero).
+    # Keep the constrained lapse prescription as a gauge seed. The final
+    # spatial metric and rest mass are solved below with the RN exterior.
     U_state = shoot_constrained_schwarzschild_initial_data(
         particles, grid, MASS_SCALE,
         initial_center_A(MASS_SCALE, SURFACE_AREAL_RADIUS),
         INITIAL_TOLERANCE, SHOOTING_MAX_ITERATIONS,
     )
-    A, _, _, _, _, _, _, r = U_state
+    r = U_state[-1]
     z4c_r = 0.5 * (r[:-1] + r[1:])
     metric = constrained_state_to_z4c(U_state, z4c_r, KAPPA, ETA, NU)
 
-    particle_r = isotropic_particle_radius(particles, U_state)
-    particles = particle_species(
-        name=particles.name, charge=particles.charges, mass=particles.masses,
-        weight=particles.weight, r=particle_r,
-        ur=jnp.interp(particle_r, r, A) * particles.ur,
-        phi=particles.phi, uphi=particles.uphi, shape_mode=particles.shape_mode,
+    metric, particles, _ = solve_star_initial_data(
+        particles, metric, MASS_SCALE, epsilon_0=EPSILON_0, tolerance=INITIAL_TOLERANCE,
     )
+    rest_mass = float(jnp.sum(particles.get_mass()))
 
     return metric, particles, MASS_SCALE, float(rest_mass)
 
@@ -156,16 +151,17 @@ def run_simulation():
         )
 
     metadata = dict(
-        initial_metric="charged_heun_schwarzschild_matched", constraint_solved=True,
+        initial_metric="star_hamiltonian_completed_map", constraint_solved=True,
         mass_scale=mass, initial_gravitational_mass=mass, total_mass=mass,
         star_rest_mass=rest_mass, total_charge=initial_charge,
-        initial_charge=initial_charge, normalization_charge=0.0,
+        initial_charge=initial_charge, normalization_charge=initial_charge,
         geometric_charge=initial_charge / np.sqrt(4.0 * np.pi),
-        charge_to_mass=CHARGE_TO_MASS, epsilon_0=EPSILON_0,
+        charge_to_mass=initial_charge / (np.sqrt(4.0 * np.pi) * rest_mass),
+        seed_charge_to_mass=CHARGE_TO_MASS, epsilon_0=EPSILON_0,
         reference_mass=mass, reference_mass_source="initial_gravitational_mass",
         surface_areal_radius=SURFACE_AREAL_RADIUS,
         initial_tolerance=INITIAL_TOLERANCE,
-        initial_solver="heun_" + SHOOTING_METHOD,
+        initial_solver="z4c_hamiltonian_completed_map",
         zero_shift=ZERO_SHIFT, kappa=KAPPA, eta=ETA, nu=NU,
         num_cells=NUM_CELLS, particles_per_shell=PARTICLES_PER_SHELL,
         shape_mode=SHAPE_MODE, particle_boundary="areal_inner_open",

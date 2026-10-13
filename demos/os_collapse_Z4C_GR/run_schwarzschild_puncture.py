@@ -97,7 +97,7 @@ def evolve_puncture(metric, mass, fields, duration, cfl, snapshot_count,
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input-directory", type=Path,
-                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder")
+                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data")
     parser.add_argument("--output-directory", type=Path,
                         default=DEMO_DIRECTORY / "outputs/schwarzschild_puncture_initial_mass")
     parser.add_argument("--duration", type=float, default=150.0,

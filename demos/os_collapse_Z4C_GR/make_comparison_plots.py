@@ -126,7 +126,7 @@ def make_comparison(os_directory, puncture_directory, output_directory, radial_l
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--os-directory", type=Path,
-                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder")
+                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data")
     parser.add_argument("--puncture-directory", type=Path,
                         default=DEMO_DIRECTORY / "outputs/schwarzschild_puncture_initial_mass")
     parser.add_argument("--output-directory", type=Path,

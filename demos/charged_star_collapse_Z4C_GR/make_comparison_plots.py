@@ -25,7 +25,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from RadiShPICR.diagnostics.read_bssn import final_snapshot, read_metadata
 
-STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M_consistent_initial_data"
 PUNCTURE_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_evolution_300M"
 OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/rn_comparison_evolution_300M"
 RADIAL_LIMIT = 10.0  # Maximum R/M for the inner figures.

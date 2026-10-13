@@ -30,7 +30,7 @@ from RadiShPICR.diagnostics.read_bssn import final_snapshot, read_metadata
 from RadiShPICR.initial_data import puncture_electric_field, puncture_metric
 from RadiShPICR.Z4C.time_evolve import electrovac_rk4_step
 
-INPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+INPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M_consistent_initial_data"
 OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/reissner_nordstrom_puncture_evolution_300M"
 
 DURATION = 300.0  # Final evolution t/M.

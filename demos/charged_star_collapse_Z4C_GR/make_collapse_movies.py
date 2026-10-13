@@ -28,7 +28,7 @@ from RadiShPICR.diagnostics.read_bssn import iter_snapshots, read_metadata
 from RadiShPICR.particles.shape_factors.common import proper_radial_shell_volume
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M_consistent_initial_data"
 BOUNDARY_NAME = None  # None uses the particle boundary recorded by the run.
 RADIAL_LIMIT = 15.0
 FRAME_STRIDE = 1

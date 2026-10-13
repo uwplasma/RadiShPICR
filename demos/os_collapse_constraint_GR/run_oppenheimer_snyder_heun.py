@@ -27,6 +27,8 @@ if str(package_root) not in sys.path:
 
 import jax
 import jax.numpy as jnp
+
+jax.config.update("jax_enable_x64", True)
 from RadiShPICR.ConstraintBasedRelativity import (
     build_radial_grid,
     calculate_metric,
@@ -35,6 +37,7 @@ from RadiShPICR.ConstraintBasedRelativity import (
     step_rk4_with_metric,
 )
 from RadiShPICR.diagnostics import write_phase_space
+from RadiShPICR.initial_data import solve_constrained_star_initial_data
 from RadiShPICR.particles import particle_species
 
 calculate_metric = jax.jit(calculate_metric)
@@ -322,7 +325,7 @@ save_every = max(1, args.save_every)
 output_directory = (
     Path(__file__).resolve().parent
     / "outputs"
-    / "heun_oppenheimer_snyder"
+    / "heun_oppenheimer_snyder_consistent_initial_data"
 )
 if output_directory.exists() and any(output_directory.iterdir()):
     raise RuntimeError(
@@ -474,8 +477,14 @@ def write_schwarzschild_snapshot(
 
 
 
-solver_U_state = calculate_metric(particles, grid.r_full, grid.dr)
-# solve for the initial metric for the particles
+solver_U_state, particles = solve_constrained_star_initial_data(particles, grid, total_star_mass)
+total_rest_mass = float(jnp.sum(particles.get_mass()))
+np.savez_compressed(
+    output_directory / "initial_data_metadata.npz",
+    total_mass=total_star_mass, initial_gravitational_mass=total_star_mass,
+    total_rest_mass=total_rest_mass, total_charge=float(jnp.sum(particles.get_charge())),
+    initial_solver="constrained_heun_completed_map_mass_calibrated",
+)
 
 step = 0
 schwarzschild_time = 0.0

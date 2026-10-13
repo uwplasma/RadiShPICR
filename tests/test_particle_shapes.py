@@ -87,6 +87,7 @@ def test_nearest_deposition_recovers_uniform_density_at_origin():
             A,
             radial_coordinate,
             grid,
+            A_values=jnp.full_like(grid.r_full, A),
         )
     )(particle_coordinates)
 
@@ -480,6 +481,7 @@ def test_fused_constraint_sources_match_individual_source_functions():
                 A_at_point,
                 radial_coordinate,
                 grid,
+                A_values=A,
             )
             expected = (
                 mass_density_at_point(
@@ -487,24 +489,28 @@ def test_fused_constraint_sources_match_individual_source_functions():
                     A_at_point,
                     radial_coordinate,
                     grid,
+                    A_values=A,
                 ),
                 charge_density_at_point(
                     particles,
                     A_at_point,
                     radial_coordinate,
                     grid,
+                    A_values=A,
                 ),
                 Srr_at_point(
                     particles,
                     A_at_point,
                     radial_coordinate,
                     grid,
+                    A_values=A,
                 ),
                 Sr_at_point(
                     particles,
                     A_at_point,
                     radial_coordinate,
                     grid,
+                    A_values=A,
                 ),
             )
 
@@ -512,7 +518,7 @@ def test_fused_constraint_sources_match_individual_source_functions():
                 assert jnp.allclose(fused_source, expected_source)
 
 
-def test_constraint_sources_convert_rs_and_ur_over_A_with_local_A():
+def test_constraint_sources_recover_constant_A_conversion():
     grid = make_grid()
     A_at_point = jnp.asarray(2.0)
     radial_coordinate = jnp.asarray(2.0)
@@ -583,12 +589,14 @@ def test_constraint_sources_convert_rs_and_ur_over_A_with_local_A():
             A_at_point,
             radial_coordinate,
             grid,
+            A_values=jnp.full_like(grid.r_full, A_at_point),
         )
         compiled = jax.jit(_source_terms_at_point)(
             particles,
             A_at_point,
             radial_coordinate,
             grid,
+            A_values=jnp.full_like(grid.r_full, A_at_point),
         )
 
         for actual_source, compiled_source, expected_source in zip(
@@ -619,6 +627,7 @@ def test_nonzero_uphi_source_keeps_origin_singularity_visible():
         jnp.asarray(1.0),
         grid.r_full[0],
         grid,
+        A_values=jnp.ones_like(grid.r_full),
     )
 
     assert not jnp.isfinite(mass_density)
@@ -651,6 +660,7 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
                 jnp.asarray(1.0),
                 r,
                 grid,
+                A_values=jnp.ones_like(grid.r_full),
             )
         )(grid.r_full)
         charge_density = jax.vmap(
@@ -659,6 +669,7 @@ def test_boundary_source_deposition_conserves_particle_mass_and_charge():
                 jnp.asarray(1.0),
                 r,
                 grid,
+                A_values=jnp.ones_like(grid.r_full),
             )
         )(grid.r_full)
 
@@ -719,6 +730,7 @@ def test_charge_density_is_independent_of_particle_momentum():
                     A_at_point,
                     radial_coordinate,
                     grid,
+                    A_values=A,
                 )
             )(A, grid.r_full)
 

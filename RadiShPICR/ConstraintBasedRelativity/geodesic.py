@@ -5,6 +5,7 @@ from jax import lax
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
 from RadiShPICR.ConstraintBasedRelativity.solve_metric import dr_A, dr_alpha
 from RadiShPICR.ConstraintBasedRelativity.utils import angular_lorentz_term
+from RadiShPICR.ConstraintBasedRelativity.particle_sources import particle_coordinate_radius
 from RadiShPICR.particles.shape_factors.cartesian_shapes import interpolate_fields_to_particles
 
 
@@ -22,15 +23,7 @@ def isotropic_particle_radius(particles, U_state):
     """Invert the completed map ``r_s = A(r) r`` for each particle."""
 
     A_values, _, _, _, _, _, _, r_grid = U_state
-    rs_grid = A_values * r_grid
-
-    return jnp.interp(
-        particles.r,
-        rs_grid,
-        r_grid,
-        left=jnp.nan,
-        right=jnp.nan,
-    )
+    return particle_coordinate_radius(particles, A_values, r_grid)
 
 
 def _angular_radial_force(uphi, rs, lapse, radial_jacobian, lorentz_factor):

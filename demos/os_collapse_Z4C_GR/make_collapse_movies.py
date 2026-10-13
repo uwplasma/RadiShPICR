@@ -25,7 +25,7 @@ if str(PACKAGE_ROOT) not in sys.path:
 from RadiShPICR.diagnostics.read_bssn import iter_snapshots, read_metadata
 from RadiShPICR.Z4C.energy_momentum_tensor import compute_radial_matter_terms
 
-DEFAULT_OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder"
+DEFAULT_OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data"
 BSSN_VARIABLES = (
     ("alpha", r"$\alpha$"),
     ("beta", r"$\beta^r$"),

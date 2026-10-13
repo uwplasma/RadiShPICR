@@ -127,15 +127,41 @@ Misner-Sharp mass, and flux-corrected RN mass against analytic RN. Charge is
 inferred from the field, not surviving particles. The initial mass is never
 fitted to the star's measured exterior geometry.
 
-The OS Z4C runner and movie renderer default to `outputs/z4c_oppenheimer_snyder`
-inside their demo directory. Explicit historical run directories remain usable.
-Initial data now use a bracketed spatial Heun shooting solve and one lapse
-normalization against the requested exterior mass. `--shooting-tolerance`
-(default `1e-10`) and `--shooting-max-iterations` (default `64`) replace
-`--shooting-iterations`. Unmatched initial data cause an explicit failure.
-`integrate_metric_from_origin` exposes a single Heun shot; `calculate_metric`
-retains its evolution-time two-shot algorithm and requires `previous_X_t` and
-`previous_X_r` by keyword.
+The neutral and charged collapse runners now use consistent particle sources
+for their initial constraints. Their output directories have a
+`_consistent_initial_data` suffix; historical runs remain readable through
+explicit paths. `solve_star_initial_data(particles, metric, total_mass)` solves
+the time-symmetric Hamiltonian constraint with the production Z4C stencils and
+Gauss operator, returning `(metric, particles, E_r)`. Its input particle radii
+are areal radii, and its returned particles use Z4C coordinate radii. It keeps
+charge, weights, and areal positions fixed and calibrates a uniform rest-mass
+factor to the requested gravitational mass. `solve_charged_star_initial_data`
+remains an alias. This cold-star initializer requires zero momenta and a
+matter-free outer boundary; it is not an evolution-time mass adjustment.
+The constrained OS demo similarly calibrates its initial exterior geometric
+mass through `solve_constrained_star_initial_data`, which returns
+`(U_state, particles)` in constrained storage.
+
+The constrained shoot still supplies the initial Z4C lapse. Its
+`--shooting-tolerance` (default `1e-10`) and `--shooting-max-iterations`
+(default `64`) control spatial chart matching. The subsequent Hamiltonian
+solve establishes the physical mass, rather than fitting the final metric.
+
+Every constrained Heun shot now iterates a completed map `R = r * A(r)`.
+Each particle has one coordinate position and one covariant momentum for
+an entire sweep; predictor and corrector apply only their local proper-volume
+factors. Both shots in `calculate_metric` use this iteration, preserving the
+eight-item state and paired, keyword-only `previous_X_t` / `previous_X_r`
+rescaling policy. General evolution never calibrates particle masses.
+Point-source helpers require keyword-only `A_values` on the full grid;
+a scalar local `A_at_point` cannot determine the particle map.
+
+The completed-map solve uses 0.5 relaxation, at most 100 iterations, and
+metric/map tolerance `max(1e-10, 100 * dtype_epsilon)`. Invalid maps and
+nonconverged solves return nonfinite states for the existing evolution
+rejection checks; host initializers raise an error. Coarse nearest-grid-point
+particle configurations can oscillate across a deposition-cell boundary and
+fail this consistency requirement; an unconverged shot is never accepted.
 
 The campaign-specific two-stream review script is retained under
 `demos/relativistic_two_stream/archive/20260908/`, with its input assumptions

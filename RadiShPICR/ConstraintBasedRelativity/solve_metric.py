@@ -3,16 +3,17 @@ import jax.numpy as jnp
 from jax import lax
 
 from RadiShPICR.ConstraintBasedRelativity.grid import RadialGrid
-from RadiShPICR.ConstraintBasedRelativity.utils import (
-    angular_lorentz_term,
-    radial_shell_volume,
-)
 from RadiShPICR.ConstraintBasedRelativity.vacuum_conditions import (
     total_particle_charge,
     total_particle_mass,
     vacuum_rescale_factors,
 )
-from RadiShPICR.particles.shape_factors.cartesian_shapes import radial_shape_stencil
+from RadiShPICR.ConstraintBasedRelativity.particle_sources import (
+    deposit_source_numerators,
+    particle_coordinate_radius,
+    source_terms_at_point as _source_terms_at_point,
+    source_values_at_point,
+)
 
 
 def dr_A(U_state):
@@ -160,76 +161,7 @@ def dr_Er(U_state, dr=None):
     return derivative.reshape(output_shape)
 
 
-def _source_terms_at_point(
-    particles,
-    A_at_point,
-    radial_coordinate,
-    grid,
-):
-    rs, _ = particles.get_positions()
-    ur_over_A, uphi = particles.get_velocities()
-    dr = grid.dr
-    # The constrained particle class stores r_s and u_r / A. Convert them
-    # with the local Heun value of A before applying the ordinary r stencil.
-    r_particle = rs / A_at_point
-    ur = A_at_point * ur_over_A
-
-    even_indices, even_stencil_weights = radial_shape_stencil(
-        r_particle,
-        grid,
-        shape_mode=particles.get_shape(),
-        parity=1,
-    )
-    odd_indices, odd_stencil_weights = radial_shape_stencil(
-        r_particle,
-        grid,
-        shape_mode=particles.get_shape(),
-        parity=-1,
-    )
-    floating_index = (radial_coordinate - grid.r_full[0]) / dr
-    grid_index = jnp.rint(floating_index).astype(even_indices.dtype)
-    # get the weights for the particles that contribute to this grid point
-
-    even_weights = jnp.sum(
-        jnp.where(even_indices == grid_index, even_stencil_weights, 0.0),
-        axis=0,
-    )
-    odd_weights = jnp.sum(
-        jnp.where(odd_indices == grid_index, odd_stencil_weights, 0.0),
-        axis=0,
-    )
-
-
-    lorentz_factor = jnp.sqrt(
-        1.0
-        + ur**2 / A_at_point**2
-        + angular_lorentz_term(uphi, A_at_point, r_particle)
-    )
-    # The Lorentz factor is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
-
-    cell_volume = radial_shell_volume(
-        A_at_point,
-        radial_coordinate,
-        dr,
-    )
-    # the volume of the cell is computed using the metric at the grid point, which is used to compute the mass density and charge density contributions from the particles.
-
-    weighted_mass = particles.get_mass() * even_weights
-    conformal_mass_density = jnp.sum(weighted_mass * lorentz_factor)
-    conformal_charge_density = jnp.sum(particles.get_charge() * even_weights)
-    conformal_Srr = jnp.sum(weighted_mass * ur**2 / lorentz_factor)
-    conformal_Sr = jnp.sum(particles.get_mass() * odd_weights * ur)
-    # compute the mass density, charge density, and stress-energy tensor components in the conformal frame
-    mass_density = conformal_mass_density / cell_volume
-    charge_density = conformal_charge_density / cell_volume
-    Srr = conformal_Srr / cell_volume
-    Sr = conformal_Sr / cell_volume
-    # compute the mass density, charge density, and stress-energy tensor components in the physical frame by dividing by the cell volume, which is computed using the metric at the grid point.
-
-    return mass_density, charge_density, Srr, Sr
-
-
-def heuns_method(U_state, dr, particles, grid):
+def heuns_method(U_state, dr, numerators, grid):
     A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = U_state
 
     dA_dr = dr_A(U_state)
@@ -242,8 +174,8 @@ def heuns_method(U_state, dr, particles, grid):
     phi_predictor = phi + dphi_dr * dr
     alpha_predictor = alpha + dalpha_dr * dr
     Er_predictor = Er + dE_dr * dr
-    source_terms_predictor = _source_terms_at_point(
-        particles,
+    source_terms_predictor = source_values_at_point(
+        numerators,
         A_predictor,
         r_predictor,
         grid,
@@ -272,8 +204,8 @@ def heuns_method(U_state, dr, particles, grid):
     phi_corrected = phi + 0.5 * (dphi_dr + dphi_dr_predictor) * dr
     alpha_corrected = alpha + 0.5 * (dalpha_dr + dalpha_dr_predictor) * dr
     Er_corrected = Er + 0.5 * (dE_dr + dE_dr_predictor) * dr
-    source_terms_corrected = _source_terms_at_point(
-        particles,
+    source_terms_corrected = source_values_at_point(
+        numerators,
         A_corrected,
         r_predictor,
         grid,
@@ -303,8 +235,8 @@ def heuns_method(U_state, dr, particles, grid):
     )
 
 
-def integrate_metric_from_origin(
-    particles,
+def _integrate_metric_sweep(
+    numerators,
     grid,
     center_A,
     center_alpha,
@@ -320,8 +252,8 @@ def integrate_metric_from_origin(
     initial_beta_over_r = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_Er = jnp.asarray(0.0, dtype=r_grid.dtype)
     initial_r = r_grid[0]
-    initial_source_terms = _source_terms_at_point(
-        particles,
+    initial_source_terms = source_values_at_point(
+        numerators,
         initial_A,
         initial_r,
         grid,
@@ -342,7 +274,7 @@ def integrate_metric_from_origin(
         state = heuns_method(
             state,
             local_dr,
-            particles,
+            numerators,
             grid,
         )
         A, phi, alpha, Krr, beta_over_r, Er, source_terms, r = state
@@ -437,6 +369,40 @@ def integrate_metric_from_origin(
     )
 
     return U_state
+
+
+def integrate_metric_from_origin(particles, grid, center_A, center_alpha):
+    """Converge the completed particle map around the original Heun sweep.
+
+    Deposition is fixed during a sweep. Only proper volumes use the local
+    predictor/corrector metric. A failed iteration returns a nonfinite state.
+    """
+    A_guess = jnp.full_like(grid.r_full, center_A)
+    tolerance = jnp.maximum(1.0e-10, 100.0 * jnp.finfo(A_guess.dtype).eps)
+
+    def iteration(carry):
+        count, A, error = carry
+        numerators = deposit_source_numerators(particles, A, grid)
+        state = _integrate_metric_sweep(numerators, grid, center_A, center_alpha)
+        new_A = state[0]
+        old_r = particle_coordinate_radius(particles, A, grid.r_full)
+        new_r = particle_coordinate_radius(particles, new_A, grid.r_full)
+        profile_error = jnp.max(jnp.abs(new_A - A) / jnp.maximum(jnp.abs(A), 1.0))
+        particle_displacement = jnp.where(particles.weight != 0.0, jnp.abs(new_r - old_r), 0.0)
+        map_error = jnp.max(particle_displacement, initial=0.0) / grid.dr
+        error = jnp.maximum(profile_error, map_error)
+        return count + 1, 0.5 * (A + new_A), error
+
+    _, A, error = lax.while_loop(
+        lambda carry: (carry[0] < 100) & (carry[2] > tolerance),
+        iteration, (jnp.asarray(0), A_guess, jnp.asarray(jnp.inf, dtype=A_guess.dtype)),
+    )
+    numerators = deposit_source_numerators(particles, A, grid)
+    state = _integrate_metric_sweep(numerators, grid, center_A, center_alpha)
+    valid = jnp.isfinite(error) & (error <= tolerance)
+    mapped_r = particle_coordinate_radius(particles, state[0], grid.r_full)
+    valid = valid & jnp.all((particles.weight == 0.0) | jnp.isfinite(mapped_r))
+    return jax.tree.map(lambda values: jnp.where(valid, values, jnp.nan), state)
 
 
 def calculate_metric(

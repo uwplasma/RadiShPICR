@@ -31,6 +31,7 @@ __all__ = [
     "initialize_oppenheimer_snyder_particles",
     "isotropic_radius_from_areal",
     "shoot_constrained_schwarzschild_initial_data",
+    "solve_constrained_star_initial_data",
     "surface_isotropic_radius",
 ]
 
@@ -229,11 +230,13 @@ def shoot_constrained_schwarzschild_initial_data(
     shooting_tolerance=SHOOTING_TOLERANCE,
     shooting_max_iterations=SHOOTING_MAX_ITERATIONS,
 ):
-    """Match the time-symmetric OS slice to the requested exterior mass.
+    """Normalize the time-symmetric OS chart against an exterior reference mass.
 
     The spatial equations do not depend on the lapse. Bisect the central A
     with alpha(0)=1, then normalize the linear lapse equation in one final
-    Heun shot. The particle rest mass is not the exterior gravitational mass.
+    Heun shot. This supplies the lapse seed for Z4C initial data; matching a
+    boundary value alone does not calibrate the invariant gravitational mass.
+    Particle rest masses remain fixed here.
     """
 
     def shoot(center_A, center_alpha):
@@ -258,7 +261,7 @@ def shoot_constrained_schwarzschild_initial_data(
             or not np.isfinite(float(X_t))
             or float(X_t) <= 0.0
         ):
-            raise RuntimeError("OS matching shot has nonfinite or nonpositive geometry.")
+            raise RuntimeError("Completed-map OS matching shot did not converge or has nonpositive geometry.")
         return U_state, float(X_r), float(X_t)
 
     lower_A = 0.9 * center_A_guess
@@ -330,3 +333,50 @@ def constrained_state_to_z4c(U_state, z4c_r, kappa=1.0, eta=2.0, nu=0.02):
         r=z4c_r,
         dr=z4c_r[1] - z4c_r[0],
     )
+
+
+def solve_constrained_star_initial_data(particles, grid, total_mass, tolerance=1e-10):
+    """Calibrate cold stellar rest mass once, preserving charge and areal radii.
+
+    Unlike coordinate normalization, this matches the invariant exterior mass.
+    Evolution continues to use calculate_metric with fixed particle masses.
+    """
+    from scipy.optimize import brentq
+    from RadiShPICR.ConstraintBasedRelativity import calculate_metric
+
+    if np.any(np.asarray(particles.ur) != 0.0) or np.any(np.asarray(particles.uphi) != 0.0):
+        raise ValueError("Star initial data require zero particle momenta.")
+
+    def scaled_particles(factor):
+        return particle_species(
+            particles.name, particles.charges, particles.masses * factor,
+            particles.weight, particles.r, particles.ur, particles.phi,
+            particles.uphi, particles.shape_mode,
+        )
+
+    @jax.jit
+    def solve(factor):
+        return calculate_metric(scaled_particles(factor), grid.r_full, grid.dr)
+
+    charge = float(jnp.sum(particles.get_charge()))
+
+    def residual(factor):
+        state = solve(factor)
+        if not all(np.all(np.isfinite(np.asarray(x))) for x in jax.tree.leaves(state)):
+            raise RuntimeError("Completed-map constrained star solve did not converge.")
+        A, phi, _, _, _, _, _, r = state
+        R = A[-1] * r[-1]
+        F = (1.0 + 2.0 * r[-1] * phi[-1] / jnp.sqrt(A[-1]))**2
+        mass = R * (1.0 - F) / 2.0 + charge**2 / (8.0 * jnp.pi * R)
+        return float(mass) - total_mass
+
+    lower, upper = 0.9, 1.1
+    for _ in range(8):
+        if residual(lower) * residual(upper) <= 0.0:
+            break
+        lower *= 0.8
+        upper *= 1.2
+    factor = brentq(residual, lower, upper, xtol=tolerance)
+    if abs(residual(factor)) > 10.0 * tolerance * max(1.0, total_mass):
+        raise RuntimeError("Constrained star mass calibration did not converge.")
+    return solve(factor), scaled_particles(factor)

@@ -1,8 +1,8 @@
 """Oppenheimer-Snyder dust collapse in Z4C.
 
-A homogeneous, time-symmetric dust sphere seeded from a constrained Heun shoot
-matched to Schwarzschild at the outer boundary, then evolved in Z4C evolution
-time with an absorbing inner areal boundary.
+A homogeneous, time-symmetric dust sphere satisfying the production Z4C
+Hamiltonian constraint at prescribed gravitational mass, evolved with an
+absorbing inner areal boundary. The constrained shoot supplies the lapse.
 
 Snapshots hold raw state -- metric and particles -- in one openPMD series.
 Diagnostics are recomputed from it by the plotting scripts.
@@ -29,16 +29,15 @@ import jax.numpy as jnp
 from tqdm import tqdm
 
 from RadiShPICR.ConstraintBasedRelativity import build_radial_grid
-from RadiShPICR.ConstraintBasedRelativity.geodesic import isotropic_particle_radius
 from RadiShPICR.diagnostics import BSSNFieldSeries
 from RadiShPICR.initial_data import (
     constrained_state_to_z4c,
     initial_center_A,
     initialize_oppenheimer_snyder_particles,
     shoot_constrained_schwarzschild_initial_data,
+    solve_star_initial_data,
 )
 from RadiShPICR.initial_data.oppenheimer_snyder import SHOOTING_METHOD
-from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.particle_boundaries import (
     INNER_AREAL_GHOST_CELLS,
     deleting_inner_areal_radius_boundary,
@@ -68,7 +67,7 @@ PARTICLE_DEPOSITION_SCHEMES = {
     "quadratic": "ruyten_density_conserving_quadratic_nonnegative",
 }
 
-KAPPA = 1.0
+KAPPA = 0.1
 ETA = 2.0
 NU = 0.02
 ZERO_SHIFT = 0  # 1 freezes the initial shift; 0 evolves it with Z4C.
@@ -78,7 +77,7 @@ rk4_step_jit = jax.jit(rk4_step, static_argnames=("particle_boundary",))
 
 def build_initial_state(r_max, num_z4c_cells, particles_per_shell, shape_mode,
                         shooting_tolerance, shooting_max_iterations):
-    """Shoot a Schwarzschild-matched constrained OS slice and convert to Z4c."""
+    """Solve the OS constraints with the production Z4C particle sources."""
 
     mass_density = TOTAL_STAR_MASS / (
         (4.0 / 3.0) * jnp.pi * SURFACE_AREAL_RADIUS**3
@@ -95,21 +94,18 @@ def build_initial_state(r_max, num_z4c_cells, particles_per_shell, shape_mode,
         shooting_tolerance, shooting_max_iterations,
     )
 
-    A, _, _, _, _, _, _, constrained_r = U_state
+    constrained_r = U_state[-1]
     z4c_r = 0.5 * (constrained_r[:-1] + constrained_r[1:])
     metric = constrained_state_to_z4c(U_state, z4c_r, KAPPA, ETA, NU)
 
-    # The constrained chart stores areal radius and u_r / A; Z4C wants
-    # isotropic radius and the covariant u_r.
-    particle_r = isotropic_particle_radius(particles, U_state)
-    particles = particle_species(
-        name=particles.name, charge=particles.charges, mass=particles.masses,
-        weight=particles.weight, r=particle_r,
-        ur=jnp.interp(particle_r, constrained_r, A) * particles.ur,
-        phi=particles.phi, uphi=particles.uphi, shape_mode=particles.shape_mode,
+    # The Hamiltonian solve maps the original areal particles onto the
+    # completed Z4C geometry and calibrates rest mass to the prescribed M.
+    metric, particles, _ = solve_star_initial_data(
+        particles, metric, TOTAL_STAR_MASS, tolerance=shooting_tolerance,
     )
+    rest_mass = float(jnp.sum(particles.get_mass()))
 
-    return metric, particles, float(total_rest_mass)
+    return metric, particles, float(rest_mass)
 
 
 @jax.jit
@@ -143,7 +139,9 @@ def run_simulation(args):
         total_effective_mass=float(np.sum(np.asarray(particles.get_mass()))),
         surface_areal_radius=SURFACE_AREAL_RADIUS,
         initial_isotropy_error=float(np.max(np.abs(np.asarray(grr - gT)))),
-        initial_metric="os_heun_schwarzschild_matched",
+        initial_metric="star_hamiltonian_completed_map",
+        initial_solver="z4c_hamiltonian_completed_map",
+        total_charge=0.0, initial_gravitational_mass=TOTAL_STAR_MASS,
         shooting_method=SHOOTING_METHOD,
         shooting_tolerance=args.shooting_tolerance,
         shooting_max_iterations=args.shooting_max_iterations,
@@ -261,7 +259,7 @@ def parse_arguments():
                         default=SHOOTING_MAX_ITERATIONS)
     parser.add_argument("--max-steps", type=int, default=None)
     parser.add_argument("--output-directory", type=Path,
-                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder")
+                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data")
     args = parser.parse_args()
 
     args.save_every = max(1, args.save_every)
