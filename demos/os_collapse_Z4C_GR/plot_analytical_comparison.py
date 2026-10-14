@@ -30,8 +30,9 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from RadiShPICR.Z4C.derivatives import first_derivative
 
-STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data"
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/analytical_schwarzschild_grr_areal"
+
+STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/evolution_data"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/analytical_comparison"
 INNER_RADIUS_LIMIT = 10.0  # R/M for the inner panel.
 
 

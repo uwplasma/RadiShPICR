@@ -53,14 +53,14 @@ SURFACE_AREAL_RADIUS = 10.0
 EPSILON_0 = 1.0  # G=c=epsilon_0=1, as in the constrained Heun solver.
 
 R_MAX = 100.0
-NUM_CELLS = 3995
+NUM_CELLS = 4000
 PARTICLE_SHELL_COUNT = 300
 PARTICLES_PER_SHELL = 300
 SHAPE_MODE = "quadratic"  # "nearest", "linear", or "quadratic".
-INITIAL_TOLERANCE = 1.0e-10
-SHOOTING_MAX_ITERATIONS = 64
+INITIAL_TOLERANCE = 1.0e-12
+SHOOTING_MAX_ITERATIONS = 100
 
-DURATION = 300.0  # Final Z4C evolution t/M, using the initial gravitational mass.
+DURATION = 150.0  # Final Z4C evolution t/M, using the initial gravitational mass.
 CFL = 0.2
 MINIMUM_DT = 1.0e-7
 SAVE_EVERY = 10

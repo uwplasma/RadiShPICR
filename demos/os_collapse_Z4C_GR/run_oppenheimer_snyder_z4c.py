@@ -49,18 +49,18 @@ TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
 DURATION = 150.0  # Final evolution t/M.
 
-Nr = 3995       # Number of Z4C radial cells.
+Nr = 4000       # Number of Z4C radial cells.
 PPC = 300       # Particles per occupied initial deposition shell.
 R_WIND = 100.0  # Outer radial coordinate.
 SHAPE_MODE = "ruyten_density_conserving_quadratic_nonnegative"
 MAX_STEPS = None
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/evolution_data"
 
 CFL = 0.2
 MINIMUM_TRIAL_TIME_STEP = 1.0e-7
 SAVE_EVERY = 10
-SHOOTING_TOLERANCE = 1.0e-10
-SHOOTING_MAX_ITERATIONS = 64
+SHOOTING_TOLERANCE = 1.0e-12
+SHOOTING_MAX_ITERATIONS = 100
 
 KAPPA = 0.1
 ETA = 2.0
