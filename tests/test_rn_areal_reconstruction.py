@@ -4,7 +4,7 @@ import jax
 import numpy as np
 import pytest
 
-from demos.charged_star_collapse_Z4C_GR.plot_RN_grr_areal import reconstruct_grr
+from demos.charged_star_collapse_Z4C_GR.plot_analytical_comparison import reconstruct_grr
 
 
 @pytest.fixture(autouse=True)
@@ -36,10 +36,13 @@ def test_rn_static_and_kerr_schild_with_rescaled_radial_coordinate(radial_scale,
     chi = (gamma_rr * gamma_T**2)**(-1.0 / 3.0)
     fields = dict(r=r, alpha=alpha, beta=beta, chi=chi,
                   conformal_grr=chi * gamma_rr, conformal_gt=chi * gamma_T)
-    reconstructed_R, g_RR, _ = reconstruct_grr(fields, r[1] - r[0])
+    reconstructed_R, g_RR, denominator = reconstruct_grr(fields, r[1] - r[0])
+    g_tt = np.where(np.isfinite(g_RR), -denominator, np.nan)
 
     np.testing.assert_allclose(reconstructed_R, R, rtol=1e-14)
     np.testing.assert_allclose(g_RR[2:], 1.0 / f[2:], rtol=2e-11)
+    np.testing.assert_allclose(g_tt[2:], -f[2:], rtol=1e-14)
+    assert np.all(np.isnan(g_tt[:2]))
 
 
 def test_nonlinear_isotropic_to_areal_jacobian():
@@ -65,8 +68,12 @@ def test_exterior_mask_does_not_connect_across_the_pole():
                   chi=np.full_like(r, 0.25), conformal_grr=np.full_like(r, 0.25),
                   conformal_gt=np.full_like(r, 0.25))
     R, g_RR, denominator = reconstruct_grr(fields, r[1] - r[0])
+    g_tt = np.where(np.isfinite(g_RR), -denominator, np.nan)
 
     assert np.all(np.isnan(g_RR[R < 2.0]))
+    assert np.all(np.isnan(g_tt[R < 2.0]))
     assert np.all(denominator[R < 2.0] < 0.0)
     np.testing.assert_allclose(g_RR[R > 2.0], 1.0 / (1.0 - 2.0 / R[R > 2.0]),
                                rtol=1e-10)
+    np.testing.assert_allclose(g_tt[R > 2.0], -(1.0 - 2.0 / R[R > 2.0]),
+                               rtol=1e-12)

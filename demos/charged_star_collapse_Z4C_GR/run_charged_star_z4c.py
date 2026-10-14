@@ -45,7 +45,7 @@ from RadiShPICR.Z4C.particle_boundaries import (
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.utils import freefall_collapse_time_step
 
-OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_charged_star_evolution_300M_consistent_initial_data"
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/evolution_data"
 
 MASS_SCALE = 1.0  # Initial gravitational mass for the seed and normalization.
 CHARGE_TO_MASS = 0.2  # Signed Q_geom / seed rest mass, before mass calibration.
