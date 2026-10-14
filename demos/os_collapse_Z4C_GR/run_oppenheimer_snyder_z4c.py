@@ -10,7 +10,6 @@ Diagnostics are recomputed from it by the plotting scripts.
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 import sys
@@ -36,6 +35,7 @@ from RadiShPICR.initial_data import (
     initialize_oppenheimer_snyder_particles,
     shoot_constrained_schwarzschild_initial_data,
     solve_star_initial_data,
+    surface_isotropic_radius,
 )
 from RadiShPICR.initial_data.oppenheimer_snyder import SHOOTING_METHOD
 from RadiShPICR.Z4C.particle_boundaries import (
@@ -49,23 +49,18 @@ TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
 DURATION = 150.0  # Final evolution t/M.
 
-# Extend the 800-node spacing over 20M to 3995 Z4c cells over 100M.
-REFERENCE_GRID_POINTS = 800
-R_MAX = 100.0
-NUM_Z4C_CELLS = 5 * (REFERENCE_GRID_POINTS - 1)
-PARTICLE_SHELL_COUNT = 300
-PARTICLES_PER_SHELL = 300
+Nr = 3995       # Number of Z4C radial cells.
+PPC = 300       # Particles per occupied initial deposition shell.
+R_WIND = 100.0  # Outer radial coordinate.
+SHAPE_MODE = "ruyten_density_conserving_quadratic_nonnegative"
+MAX_STEPS = None
+OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data"
 
 CFL = 0.2
 MINIMUM_TRIAL_TIME_STEP = 1.0e-7
 SAVE_EVERY = 10
 SHOOTING_TOLERANCE = 1.0e-10
 SHOOTING_MAX_ITERATIONS = 64
-PARTICLE_DEPOSITION_SCHEMES = {
-    "nearest": "ordinary_nearest",
-    "linear": "ordinary_cic",
-    "quadratic": "ruyten_density_conserving_quadratic_nonnegative",
-}
 
 KAPPA = 0.1
 ETA = 2.0
@@ -75,23 +70,30 @@ ZERO_SHIFT = 0  # 1 freezes the initial shift; 0 evolves it with Z4C.
 rk4_step_jit = jax.jit(rk4_step, static_argnames=("particle_boundary",))
 
 
-def build_initial_state(r_max, num_z4c_cells, particles_per_shell, shape_mode,
-                        shooting_tolerance, shooting_max_iterations):
+def build_initial_state():
     """Solve the OS constraints with the production Z4C particle sources."""
 
     mass_density = TOTAL_STAR_MASS / (
         (4.0 / 3.0) * jnp.pi * SURFACE_AREAL_RADIUS**3
     )
-    grid = build_radial_grid(r_max, num_z4c_cells + 1)
+    grid = build_radial_grid(R_WIND, Nr + 1)
 
-    particles, _, total_rest_mass = initialize_oppenheimer_snyder_particles(
+    # Match the initializer's nodal deposition shells, including the partial
+    # surface shell, in the initial isotropic chart (X_r = 1).
+    surface_r = surface_isotropic_radius(SURFACE_AREAL_RADIUS, TOTAL_STAR_MASS)
+    grid_indices = np.arange(grid.r_full.size)
+    shell_inner = np.maximum((grid_indices - 0.5) * grid.dr, 0.0)
+    shell_outer = np.minimum((grid_indices + 0.5) * grid.dr, surface_r)
+    occupied_shell_count = int(np.count_nonzero(shell_outer > shell_inner))
+
+    particles, _, _ = initialize_oppenheimer_snyder_particles(
         grid, mass_density, TOTAL_STAR_MASS, SURFACE_AREAL_RADIUS,
-        PARTICLE_SHELL_COUNT * particles_per_shell, shape_mode,
+        occupied_shell_count * PPC, SHAPE_MODE,
     )
     U_state = shoot_constrained_schwarzschild_initial_data(
         particles, grid, TOTAL_STAR_MASS,
         initial_center_A(TOTAL_STAR_MASS, SURFACE_AREAL_RADIUS),
-        shooting_tolerance, shooting_max_iterations,
+        SHOOTING_TOLERANCE, SHOOTING_MAX_ITERATIONS,
     )
 
     constrained_r = U_state[-1]
@@ -101,7 +103,7 @@ def build_initial_state(r_max, num_z4c_cells, particles_per_shell, shape_mode,
     # The Hamiltonian solve maps the original areal particles onto the
     # completed Z4C geometry and calibrates rest mass to the prescribed M.
     metric, particles, _ = solve_star_initial_data(
-        particles, metric, TOTAL_STAR_MASS, tolerance=shooting_tolerance,
+        particles, metric, TOTAL_STAR_MASS, tolerance=SHOOTING_TOLERANCE,
     )
     rest_mass = float(jnp.sum(particles.get_mass()))
 
@@ -123,14 +125,16 @@ def state_is_acceptable(metric, particles):
     return finite & positive
 
 
-def run_simulation(args):
-    wall_start = time.perf_counter()
-    metric, particles, total_rest_mass = build_initial_state(
-        args.r_max, args.num_cells, args.particles_per_shell, args.shape_mode,
-        args.shooting_tolerance, args.shooting_max_iterations,
-    )
+def run_simulation():
+    if OUTPUT_DIRECTORY.exists() and any(OUTPUT_DIRECTORY.iterdir()):
+        raise FileExistsError(
+            f"Refusing to overwrite nonempty output directory: {OUTPUT_DIRECTORY}"
+        )
 
-    target_time = args.duration * TOTAL_STAR_MASS
+    wall_start = time.perf_counter()
+    metric, particles, total_rest_mass = build_initial_state()
+
+    target_time = DURATION * TOTAL_STAR_MASS
     initial_particle_weight = float(np.sum(np.asarray(particles.weight)))
     grr = metric.conformal_grr / metric.chi
     gT = metric.conformal_gt / metric.chi
@@ -143,39 +147,40 @@ def run_simulation(args):
         initial_solver="z4c_hamiltonian_completed_map",
         total_charge=0.0, initial_gravitational_mass=TOTAL_STAR_MASS,
         shooting_method=SHOOTING_METHOD,
-        shooting_tolerance=args.shooting_tolerance,
-        shooting_max_iterations=args.shooting_max_iterations,
+        shooting_tolerance=SHOOTING_TOLERANCE,
+        shooting_max_iterations=SHOOTING_MAX_ITERATIONS,
         zero_shift=ZERO_SHIFT, kappa=KAPPA, eta=ETA, nu=NU,
-        num_cells=args.num_cells, particles_per_shell=args.particles_per_shell,
-        shape_mode=args.shape_mode, particle_state_variables="r_ur",
+        num_cells=Nr, particles_per_shell=PPC, r_max=R_WIND,
+        occupied_shell_count=int(particles.r.size // PPC),
+        shape_mode=SHAPE_MODE, particle_state_variables="r_ur",
         particle_boundary="areal_inner_open",
         particle_inner_ghost_cells=INNER_AREAL_GHOST_CELLS,
         particle_deposition_boundary="unrenormalized_shape_overlap",
-        particle_deposition_scheme=PARTICLE_DEPOSITION_SCHEMES[args.shape_mode],
+        particle_deposition_scheme=SHAPE_MODE,
         particle_absorption_rule="zero_physical_overlap_or_beyond_two_ghost_edge",
         metric_boundary="sommerfeld", time_coordinate="evolution",
-        target_time=target_time, duration_over_mass=args.duration, cfl=args.cfl,
+        target_time=target_time, duration_over_mass=DURATION, cfl=CFL,
         dr=float(metric.dr),
     )
 
     step, evolution_time = 0, 0.0
     time_tolerance = 1.0e-10 * TOTAL_STAR_MASS
-    maximum_steps = math.inf if args.max_steps is None else args.max_steps
+    maximum_steps = math.inf if MAX_STEPS is None else MAX_STEPS
     stop_reason = "target_time"
 
-    with BSSNFieldSeries(args.output_directory, metadata=metadata) as fields, \
-            tqdm(total=args.duration, desc="evolving Z4c stellar collapse",
+    with BSSNFieldSeries(OUTPUT_DIRECTORY, metadata=metadata) as fields, \
+            tqdm(total=DURATION, desc="evolving Z4c stellar collapse",
                  unit="t/M") as progress:
         fields.write(metric, 0, time=0.0, particles=particles)
 
         while target_time - evolution_time > time_tolerance and step < maximum_steps:
             remaining = target_time - evolution_time
-            trial_dt = min(args.cfl * float(metric.dr),
+            trial_dt = min(CFL * float(metric.dr),
                            freefall_collapse_time_step(particles, metric),
                            remaining)
             accepted = False
-            endpoint_trial = trial_dt < args.minimum_dt
-            while trial_dt >= args.minimum_dt or endpoint_trial:
+            endpoint_trial = trial_dt < MINIMUM_TRIAL_TIME_STEP
+            while trial_dt >= MINIMUM_TRIAL_TIME_STEP or endpoint_trial:
                 endpoint_trial = False
                 trial_particles, trial_metric, _, _ = rk4_step_jit(
                     particles, metric, trial_dt,
@@ -194,7 +199,7 @@ def run_simulation(args):
                 stop_reason = "no_acceptable_trial_above_minimum_dt"
                 print(
                     "No finite positive-lapse Z4c trial state found above "
-                    f"dt={args.minimum_dt:.3e}; preserving step {step} at "
+                    f"dt={MINIMUM_TRIAL_TIME_STEP:.3e}; preserving step {step} at "
                     f"evolution time {evolution_time:.8e}."
                 )
                 break
@@ -205,7 +210,7 @@ def run_simulation(args):
             if target_time - evolution_time <= time_tolerance:
                 evolution_time = target_time
 
-            if step % args.save_every == 0:
+            if step % SAVE_EVERY == 0:
                 fields.write(metric, step, time=evolution_time, dt=trial_dt,
                              particles=particles)
 
@@ -242,42 +247,9 @@ def run_simulation(args):
     return result
 
 
-def parse_arguments():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--r-max", type=float, default=R_MAX)
-    parser.add_argument("--num-cells", type=int, default=NUM_Z4C_CELLS)
-    parser.add_argument("--particles-per-shell", type=int, default=PARTICLES_PER_SHELL)
-    parser.add_argument("--shape-mode", choices=tuple(PARTICLE_DEPOSITION_SCHEMES),
-                        default="quadratic")
-    parser.add_argument("--duration", type=float, default=DURATION,
-                        help="Final evolution time in stellar masses (default: 150).")
-    parser.add_argument("--cfl", type=float, default=CFL)
-    parser.add_argument("--minimum-dt", type=float, default=MINIMUM_TRIAL_TIME_STEP)
-    parser.add_argument("--save-every", type=int, default=SAVE_EVERY)
-    parser.add_argument("--shooting-tolerance", type=float, default=SHOOTING_TOLERANCE)
-    parser.add_argument("--shooting-max-iterations", type=int,
-                        default=SHOOTING_MAX_ITERATIONS)
-    parser.add_argument("--max-steps", type=int, default=None)
-    parser.add_argument("--output-directory", type=Path,
-                        default=DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data")
-    args = parser.parse_args()
-
-    args.save_every = max(1, args.save_every)
-    if not np.isfinite(args.shooting_tolerance) or args.shooting_tolerance <= 0.0:
-        parser.error("shooting-tolerance must be finite and positive")
-    if args.shooting_max_iterations < 1:
-        parser.error("shooting-max-iterations must be at least one")
-    if args.duration <= 0.0 or args.cfl <= 0.0:
-        parser.error("duration and cfl must be positive")
-    if args.output_directory.exists() and any(args.output_directory.iterdir()):
-        parser.error(f"Refusing to overwrite nonempty output directory: {args.output_directory}")
-
-    return args
-
-
 if __name__ == "__main__":
     jax.config.update("jax_enable_x64", True)
-    summary = run_simulation(parse_arguments())
+    summary = run_simulation()
     if not summary["completed"] and summary["stop_reason"] != "max_steps":
         raise SystemExit(
             "Evolution stopped; the last accepted state was preserved in the series."
