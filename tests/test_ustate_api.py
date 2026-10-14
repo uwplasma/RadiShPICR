@@ -419,11 +419,13 @@ def test_calculate_metric_keeps_particle_state_unchanged():
 
 
 def test_step_rk4_jit_matches_eager_output():
+    # Use a resolved weak-field nearest-particle case; discontinuous map
+    # rejection has its own regression in test_completed_particle_map.py.
     eager_particles = particle_species(
         name="test",
         charge=0.0,
         mass=1.0,
-        weight=jnp.asarray([0.5, 1.5]),
+        weight=jnp.asarray([0.05, 0.15]),
         r=jnp.asarray([2.5, 7.5]),
         ur=jnp.asarray([0.01, -0.01]),
         phi=jnp.asarray([0.0, 0.2]),
@@ -434,7 +436,7 @@ def test_step_rk4_jit_matches_eager_output():
         name="test",
         charge=0.0,
         mass=1.0,
-        weight=jnp.asarray([0.5, 1.5]),
+        weight=jnp.asarray([0.05, 0.15]),
         r=jnp.asarray([2.5, 7.5]),
         ur=jnp.asarray([0.01, -0.01]),
         phi=jnp.asarray([0.0, 0.2]),
@@ -558,10 +560,10 @@ def test_source_terms_keep_zero_A_singularity_visible():
 
     source_terms = jnp.asarray(
         [
-            mass_density_at_point(particles, A_at_point, radial_coordinate, grid),
-            charge_density_at_point(particles, A_at_point, radial_coordinate, grid),
-            Srr_at_point(particles, A_at_point, radial_coordinate, grid),
-            Sr_at_point(particles, A_at_point, radial_coordinate, grid),
+            mass_density_at_point(particles, A_at_point, radial_coordinate, grid, A_values=jnp.ones_like(grid.r_full)),
+            charge_density_at_point(particles, A_at_point, radial_coordinate, grid, A_values=jnp.ones_like(grid.r_full)),
+            Srr_at_point(particles, A_at_point, radial_coordinate, grid, A_values=jnp.ones_like(grid.r_full)),
+            Sr_at_point(particles, A_at_point, radial_coordinate, grid, A_values=jnp.ones_like(grid.r_full)),
         ]
     )
 
