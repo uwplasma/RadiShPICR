@@ -1,16 +1,15 @@
-"""Compare the final OS radial metric with analytical Schwarzschild.
 
-Treat the final snapshot as stationary and write t = T + h(r), where
-    h' = beta_r / (alpha**2 - beta_r * beta**r).
-This removes the time-radial cross term and gives
-    g_rr = gamma_rr + beta_r**2 / (alpha**2 - beta_r * beta**r).
-Then transform the component to areal radius: g_RR = g_rr / (dR/dr)**2.
-Integrating h is unnecessary for this component. The stationary assumption
-is not an exact coordinate transformation of a still-evolving spacetime.
+"""
+Christopher Woolford 10/14/2026
 
-Run with no arguments. Paths and plot limits are set below. Only the final
-iteration is read, and M is the saved initial stellar gravitational mass,
-without fitting or boundary rescaling. Units are G = c = 1.
+Use a height function h(r) to remove the non-diagonal terms from the metric tensor,
+and assuming the final state is time independent.
+
+h' = beta_r / (alpha**2 - beta_r * beta**r)
+g_rr = gamma_rr + beta_r**2 / (alpha**2 - beta_r * beta**r)
+g_RR = g_rr / (dR/dr)**2
+
+
 """
 
 import sys
@@ -31,9 +30,9 @@ if str(PACKAGE_ROOT) not in sys.path:
 
 from RadiShPICR.Z4C.derivatives import first_derivative
 
-STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder"
+STAR_DIRECTORY = DEMO_DIRECTORY / "outputs/z4c_oppenheimer_snyder_consistent_initial_data"
 OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/analytical_schwarzschild_grr_areal"
-INNER_RADIUS_LIMIT = 10.0  # R/M for the inner figure.
+INNER_RADIUS_LIMIT = 10.0  # R/M for the inner panel.
 
 
 def read_final_state():
@@ -83,36 +82,50 @@ def main():
     jax.config.update("jax_enable_x64", True)
     fields, dr, step, time, mass = read_final_state()
     R, g_RR, denominator = reconstruct_grr(fields, dr)
+    # The stationary time shift leaves g_tt unchanged; reuse the g_RR mask.
+    g_tt = np.where(np.isfinite(g_RR), -denominator, np.nan)
 
     # Schwarzschild has its own exterior mask, independent of the numerical pole.
     g_RR_schwarzschild = np.full_like(R, np.nan)
+    g_tt_schwarzschild = np.full_like(R, np.nan)
     schwarzschild_exterior = ((np.arange(R.size) >= np.argmin(R)) & (R > 2.0 * mass))
     g_RR_schwarzschild[schwarzschild_exterior] = (
         1.0 / (1.0 - 2.0 * mass / R[schwarzschild_exterior])
     )
+    g_tt_schwarzschild[schwarzschild_exterior] = (
+        -(1.0 - 2.0 * mass / R[schwarzschild_exterior])
+    )
     radius = R / mass
 
     OUTPUT_DIRECTORY.mkdir(parents=True, exist_ok=True)
-    for extent, upper in (("full", radius[-1]), ("inner", INNER_RADIUS_LIMIT)):
-        visible = radius <= upper
-        figure, axis = plt.subplots(figsize=(10, 6), constrained_layout=True)
-        axis.plot(radius[visible], g_RR[visible], color="tab:blue", linewidth=1.8,
-                  label=f"OS: stationary reconstruction, t/M={time / mass:g}")
-        axis.plot(radius[visible], g_RR_schwarzschild[visible], "--",
-                  color="tab:orange", linewidth=1.8, label="Analytical Schwarzschild")
-        axis.set_yscale("log")
-        axis.set_xlim(2.0, min(upper, radius[-1]))
-        axis.set_xlabel(r"Areal radius $R/M$ (initial stellar mass)")
-        axis.set_ylabel(r"$g_{RR}$")
-        axis.set_title(
+    for component, numerical, analytical, scale, label, formula in (
+        ("grr", g_RR, g_RR_schwarzschild, "log", r"$g_{RR}$",
+         r"$g_{RR}=[\gamma_{rr}+\beta_r^2/(\alpha^2-\beta_r\beta^r)]/(dR/dr)^2$"),
+        ("gtt", g_tt, g_tt_schwarzschild, "linear", r"$g_{tt}$",
+         r"$g_{tt}=-\alpha^2+\gamma_{rr}(\beta^r)^2$"),
+    ):
+        figure, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
+        figure.suptitle(
             "Final Oppenheimer–Snyder collapse and analytical Schwarzschild\n"
-            f"Initial gravitational mass M={mass:g}\n"
-            r"$g_{RR}=[\gamma_{rr}+\beta_r^2/(\alpha^2-\beta_r\beta^r)]/(dR/dr)^2$",
+            f"Initial gravitational mass M={mass:g}\n" + formula,
             fontsize=12,
         )
-        axis.grid(alpha=0.25, which="both")
-        axis.legend(fontsize=10)
-        path = OUTPUT_DIRECTORY / f"final_schwarzschild_grr_areal_{extent}.png"
+        for axis, (extent, upper) in zip(
+            axes, (("Inner", INNER_RADIUS_LIMIT), ("Full", radius[-1]))
+        ):
+            visible = radius <= upper
+            axis.plot(radius[visible], numerical[visible], color="tab:blue", linewidth=1.8,
+                      label=f"OS: stationary reconstruction, t/M={time / mass:g}")
+            axis.plot(radius[visible], analytical[visible], "--",
+                      color="tab:orange", linewidth=1.8, label="Analytical Schwarzschild")
+            axis.set_yscale(scale)
+            axis.set_xlim(2.0, min(upper, radius[-1]))
+            axis.set_xlabel(r"Areal radius $R/M$ (initial stellar mass)")
+            axis.set_ylabel(label)
+            axis.set_title(f"{extent} range", fontsize=12)
+            axis.grid(alpha=0.25, which="both")
+            axis.legend(fontsize=10)
+        path = OUTPUT_DIRECTORY / f"final_{component}.png"
         figure.savefig(path, dpi=180)
         plt.close(figure)
         print(f"Saved {path}")
@@ -124,17 +137,21 @@ def main():
     for index in crossings:
         print(f"Numerical denominator changes sign at R/M in "
               f"[{radius[index]:.9f}, {radius[index + 1]:.9f}]")
-    difference = g_RR - g_RR_schwarzschild
-    relative_difference = difference / g_RR_schwarzschild
-    print(f"Outer boundary R/M={radius[-1]:.9f}: "
-          f"g_RR={g_RR[-1]:.9f}, Schwarzschild={g_RR_schwarzschild[-1]:.9f}")
-    print(f"Outer boundary mismatch: {difference[-1]:+.8e} "
-          f"(relative {relative_difference[-1]:+.8e})")
-    for target in (3.0, 5.0, 10.0):
-        index = int(np.argmin(abs(radius - target)))
-        print(f"R/M={radius[index]:.6f}: g_RR={g_RR[index]:.9f}, "
-              f"Schwarzschild={g_RR_schwarzschild[index]:.9f}, "
-              f"relative mismatch={relative_difference[index]:+.8e}")
+    for component, numerical, analytical in (
+        ("g_RR", g_RR, g_RR_schwarzschild),
+        ("g_tt", g_tt, g_tt_schwarzschild),
+    ):
+        difference = numerical - analytical
+        relative_difference = difference / analytical
+        print(f"Outer boundary R/M={radius[-1]:.9f}: "
+              f"{component}={numerical[-1]:.9f}, Schwarzschild={analytical[-1]:.9f}")
+        print(f"Outer boundary {component} mismatch: {difference[-1]:+.8e} "
+              f"(relative {relative_difference[-1]:+.8e})")
+        for target in (3.0, 5.0, 10.0):
+            index = int(np.argmin(abs(radius - target)))
+            print(f"R/M={radius[index]:.6f}: {component}={numerical[index]:.9f}, "
+                  f"Schwarzschild={analytical[index]:.9f}, "
+                  f"relative mismatch={relative_difference[index]:+.8e}")
 
 
 if __name__ == "__main__":
