@@ -1,7 +1,7 @@
 """Compare the final charged OS radial and time metrics with analytical RN.
 
 Use the stationary reconstruction
-    g_rr = gamma_rr + beta_r**2 / (alpha**2 - beta_r * beta**r),
+    g_rr = gamma_rr + beta_r**2 / (alpha**2 - beta_r * beta^r),
 then transform the component to areal radius: g_RR = g_rr / (dR/dr)**2.
 The stationary time shift leaves g_tt = -alpha**2 + gamma_rr * beta**2
 unchanged, with no rescaling of the time coordinate.
@@ -109,9 +109,7 @@ def main():
     ):
         figure, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
         figure.suptitle(
-            "Final charged OS collapse and analytical Reissner–Nordström\n"
-            f"M={mass:g}, q/M={np.sqrt(q_squared) / mass:.9f}; "
-            "no mass fit or rescaling\n"
+            "Numerical vs. Analytical Comparison of the Final Black Hole Spacetime\n"
             + formula,
             fontsize=12,
         )
@@ -120,12 +118,12 @@ def main():
         ):
             visible = radius <= upper
             axis.plot(radius[visible], numerical[visible], color="tab:blue", linewidth=1.8,
-                      label=f"Charged OS: stationary reconstruction, t/M={time / mass:g}")
+                      label=f"Numerical {component}")
             axis.plot(radius[visible], analytical[visible], "--",
                       color="tab:orange", linewidth=1.8, label="Analytical RN")
             axis.set_yscale(scale)
             axis.set_xlim(horizon / mass, min(upper, radius[-1]))
-            axis.set_xlabel(r"Areal radius $R/M$ (initial stellar mass)")
+            axis.set_xlabel(r"Areal radius $R/M$")
             axis.set_ylabel(label)
             axis.set_title(f"{extent} range", fontsize=12)
             axis.grid(alpha=0.25, which="both")

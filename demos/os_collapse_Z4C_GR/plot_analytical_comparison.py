@@ -107,8 +107,7 @@ def main():
     ):
         figure, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
         figure.suptitle(
-            "Final Oppenheimer–Snyder collapse and analytical Schwarzschild\n"
-            f"Initial gravitational mass M={mass:g}\n" + formula,
+            "Numerical vs. Analytical Comparison of the Final Black Hole Spacetime\n",
             fontsize=12,
         )
         for axis, (extent, upper) in zip(
@@ -116,12 +115,12 @@ def main():
         ):
             visible = radius <= upper
             axis.plot(radius[visible], numerical[visible], color="tab:blue", linewidth=1.8,
-                      label=f"OS: stationary reconstruction, t/M={time / mass:g}")
+                      label=f"Numerical {component}")
             axis.plot(radius[visible], analytical[visible], "--",
                       color="tab:orange", linewidth=1.8, label="Analytical Schwarzschild")
             axis.set_yscale(scale)
             axis.set_xlim(2.0, min(upper, radius[-1]))
-            axis.set_xlabel(r"Areal radius $R/M$ (initial stellar mass)")
+            axis.set_xlabel(r"Areal radius $R/M$")
             axis.set_ylabel(label)
             axis.set_title(f"{extent} range", fontsize=12)
             axis.grid(alpha=0.25, which="both")
