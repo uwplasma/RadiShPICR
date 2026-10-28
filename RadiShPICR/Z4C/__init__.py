@@ -1,5 +1,6 @@
 """Z4C metric and time-evolution helpers for RadiShPICR."""
 
+from RadiShPICR.Z4C.apparent_horizon import find_apparent_horizon, outgoing_expansion
 from RadiShPICR.Z4C.curvature_invariants import misner_sharp_mass
 from RadiShPICR.Z4C.current import compute_radial_current_density
 from RadiShPICR.Z4C.electric_field import (
@@ -37,9 +38,11 @@ __all__ = [
     "deleting_particle_boundary",
     "electric_field_energy",
     "electrovac_rk4_step",
+    "find_apparent_horizon",
     "metric_rk4_step",
     "metric_time_derivatives",
     "misner_sharp_mass",
+    "outgoing_expansion",
     "radial_electric_field_time_derivative",
     "radial_gauss_residual",
     "rk4_step",

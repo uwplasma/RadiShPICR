@@ -1,6 +1,10 @@
 __pycache__/*
 *.pyc
 *.ipynb
+!demos/charged_star_collapse_Z4C_GR/visualize_particles_3d.ipynb
+!demos/os_collapse_Z4C_GR/plot_hamiltonian_constraint.ipynb
+!demos/os_collapse_Z4C_GR/plot_collapse_spacetime.ipynb
+!demos/charged_star_collapse_Z4C_GR/plot_hamiltonian_constraint.ipynb
 outputs/*
 demos/**/outputs/
 demos/oppenheimer_snyder_collapse_z4c/runs/
