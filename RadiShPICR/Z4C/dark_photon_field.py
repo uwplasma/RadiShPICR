@@ -2,10 +2,11 @@
 
 The stored tuple is ``(E_prime_r, A_prime_r, phi_prime)``. Both radial
 components are covariant and odd at the origin; the scalar is even. Magnetic
-fields vanish in spherical symmetry. The mass signs follow the supplied
-equations literally: vacuum modes obey omega**2 = k**2 - mu**2. These signs
-do not give the positive-mass Proca dispersion associated with the supplied
-Lagrangian, so its positive energy diagnostic is not asserted conserved.
+fields vanish in spherical symmetry. The mass term follows the Proca
+convention of the notes' section 3.2, equations (16)-(19), so vacuum modes
+obey omega**2 = k**2 + mu**2 and the conserved constraint is
+D_i E'^i + mu**2 phi' = sin_chi * rho_q. Appendix A of those notes carries
+the opposite mass sign, which is tachyonic and is not used here.
 """
 
 import jax.numpy as jnp
@@ -19,11 +20,11 @@ def dark_photon_time_derivatives(
     metric, metric_rhs, dark_fields, charge_density, current_density,
     mu, sin_chi=0.0, epsilon_0=1.0,
 ):
-    """Return the literal dark-field RHS, converted to covariant storage.
+    """Return the dark-field RHS, converted to covariant storage.
 
     ``current_density`` is coordinate transport current, as for ordinary
-    Maxwell evolution. Thus alpha times the screenshot current is
-    ``-(current_density + beta * charge_density) / epsilon_0``. The actual
+    Maxwell evolution, so ``alpha * J^r`` equals ``current_density + beta *
+    charge_density`` and enters Ampere's law with a minus sign. The actual
     stage metric derivative is required even on a prescribed background.
     """
 
@@ -57,7 +58,7 @@ def dark_photon_time_derivatives(
         beta * dE_prime_up_dr - E_prime_up * dbeta_dr
         + alpha * K * E_prime_up
         - sin_chi * (current_density + beta * charge_density) / epsilon_0
-        - alpha * mu**2 * A_prime_up
+        + alpha * mu**2 * A_prime_up
     )
     dA_prime_up_dt = (
         beta * dA_prime_up_dr - A_prime_up * dbeta_dr
@@ -83,7 +84,12 @@ def dark_photon_time_derivatives(
 def dark_gauss_residual(
     metric, dark_fields, charge_density, mu, sin_chi=0.0, epsilon_0=1.0,
 ):
-    """Return epsilon_0 * (D_i E'^i - mu**2 phi') - sin_chi * rho_q."""
+    """Return epsilon_0 * (D_i E'^i + mu**2 phi') - sin_chi * rho_q.
+
+    This combination is the Proca constraint that the evolution preserves:
+    taking the divergence of the ``E'`` equation and using the ``phi'``
+    equation gives d_t (D_i E'^i + mu**2 phi') = 0 in vacuum.
+    """
 
     E_prime_r, _, phi_prime = dark_fields
     a = metric.conformal_grr / metric.chi
@@ -96,14 +102,14 @@ def dark_gauss_residual(
         + (2.0 / metric.r + 0.5 * da_dr / a + db_dr / b) * E_prime_up
     )
 
-    return epsilon_0 * (divergence_E - mu**2 * phi_prime) - sin_chi * charge_density
+    return epsilon_0 * (divergence_E + mu**2 * phi_prime) - sin_chi * charge_density
 
 
 def dark_field_energy(metric, dark_fields, mu, epsilon_0=1.0):
-    """Integrate the supplied Lagrangian's positive dark energy density.
+    """Integrate the Proca energy density over the slice.
 
-    The literal evolution signs differ from that Lagrangian's mass signs;
-    this diagnostic must not be interpreted as a conserved vacuum energy.
+    The evolution mass sign matches this action, so on a static background
+    with no mixing this is conserved up to flux through the domain edges.
     """
 
     matter = dark_energy_momentum_tensor(metric, dark_fields, mu, epsilon_0)

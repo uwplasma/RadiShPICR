@@ -451,8 +451,8 @@ def rk4_step(
     supplied dark equations in the same tableau and append the updated tuple
     as a fifth return value. The radial components are covariant. Dark fields
     remain active independently of ``EM_on``; ``sin_chi=0`` removes particle
-    coupling but retains their stress when ``GR_on=True``. The literal dark
-    mass signs give vacuum dispersion omega**2 = k**2 - mu**2.
+    coupling but retains their stress when ``GR_on=True``. The Proca mass
+    sign gives vacuum dispersion omega**2 = k**2 + mu**2.
 
     ``dark_field_boundary(fields, stage_metric, stage_time)`` supplies stage
     boundary data. The default suppresses incoming outer characteristics.

@@ -58,13 +58,13 @@ def initialize_vacuum_matter_terms(metric):
 
 
 def dark_energy_momentum_tensor(metric, dark_fields, mu, epsilon_0=1.0):
-    """Eulerian dark-field sources from the supplied positive-mass action.
+    """Eulerian dark-field sources from the positive-mass Proca action.
 
     Both radial fields in ``(E_prime_r, A_prime_r, phi_prime)`` are covariant.
     ``Stt`` is S_theta_theta / r**2 and ``Sr`` is contravariant S^r.
     Mixing couples the particles to this field; it does not multiply its
-    standalone stress tensor. The literal supplied evolution mass signs
-    differ from this action, so positive energy conservation is not assumed.
+    standalone stress tensor. The evolution in ``dark_photon_field`` uses the
+    mass sign of this action, so the two are mutually consistent.
     """
 
     E_prime_r, A_prime_r, phi_prime = dark_fields
