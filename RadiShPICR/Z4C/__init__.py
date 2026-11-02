@@ -3,6 +3,13 @@
 from RadiShPICR.Z4C.apparent_horizon import find_apparent_horizon, outgoing_expansion
 from RadiShPICR.Z4C.curvature_invariants import misner_sharp_mass
 from RadiShPICR.Z4C.current import compute_radial_current_density
+from RadiShPICR.Z4C.dark_photon_field import (
+    dark_field_energy,
+    dark_field_outer_boundary,
+    dark_gauss_residual,
+    dark_photon_time_derivatives,
+)
+from RadiShPICR.Z4C.energy_momentum_tensor import dark_energy_momentum_tensor
 from RadiShPICR.Z4C.electric_field import (
     compute_electrovac_matter_terms,
     compute_electrostatic_matter_terms,
@@ -34,6 +41,11 @@ __all__ = [
     "compute_radial_charge_density",
     "compute_radial_current_density",
     "compute_radial_lorentz_force",
+    "dark_energy_momentum_tensor",
+    "dark_field_energy",
+    "dark_field_outer_boundary",
+    "dark_gauss_residual",
+    "dark_photon_time_derivatives",
     "deleting_inner_areal_radius_boundary",
     "deleting_particle_boundary",
     "electric_field_energy",
