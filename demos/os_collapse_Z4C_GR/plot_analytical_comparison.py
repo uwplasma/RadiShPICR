@@ -105,14 +105,12 @@ def main():
         ("gtt", g_tt, g_tt_schwarzschild, "linear", r"$g_{tt}$",
          r"$g_{tt}=-\alpha^2+\gamma_{rr}(\beta^r)^2$"),
     ):
-        figure, axes = plt.subplots(1, 2, figsize=(16, 6), constrained_layout=True)
-        figure.suptitle(
-            "Numerical vs. Analytical Comparison of the Final Black Hole Spacetime\n",
-            fontsize=12,
-        )
-        for axis, (extent, upper) in zip(
-            axes, (("Inner", INNER_RADIUS_LIMIT), ("Full", radius[-1]))
-        ):
+        for extent, upper in (("Inner", INNER_RADIUS_LIMIT), ("Full", radius[-1])):
+            figure, axis = plt.subplots(figsize=(8, 6), constrained_layout=True)
+            figure.suptitle(
+                "Numerical vs. Analytical Comparison of the Final Black Hole Spacetime\n",
+                fontsize=12,
+            )
             visible = radius <= upper
             axis.plot(radius[visible], numerical[visible], color="tab:blue", linewidth=1.8,
                       label=f"Numerical {component}")
@@ -125,10 +123,10 @@ def main():
             axis.set_title(f"{extent} range", fontsize=12)
             axis.grid(alpha=0.25, which="both")
             axis.legend(fontsize=10)
-        path = OUTPUT_DIRECTORY / f"final_{component}.png"
-        figure.savefig(path, dpi=180)
-        plt.close(figure)
-        print(f"Saved {path}")
+            path = OUTPUT_DIRECTORY / f"final_{component}_{extent.lower()}.png"
+            figure.savefig(path, dpi=180)
+            plt.close(figure)
+            print(f"Saved {path}")
 
     print(f"Source: {STAR_DIRECTORY / 'bssn_fields.h5'}, step={step}, t/M={time / mass:g}")
     print(f"Initial gravitational mass M={mass:.12g}; Schwarzschild horizon R/M=2")
