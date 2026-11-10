@@ -126,15 +126,21 @@ def dark_gauss_residual(
 
 
 def dark_field_energy(metric, dark_fields, mu, epsilon_0=1.0):
-    """Integrate the Proca energy density over the slice.
+    """Integrate the Proca energy associated with coordinate time translation.
 
-    The evolution mass sign matches this action, so on a static background
-    with no mixing this is conserved up to flux through the domain edges.
+    When the background is stationary, t^mu = alpha*n^mu + beta^mu is a
+    Killing vector and the density is alpha*rho - beta^i*S_i. Without energy
+    exchange with particles, this energy is conserved up to boundary flux.
+    On an evolving background the same integral need not be conserved.
     """
 
     matter = dark_energy_momentum_tensor(metric, dark_fields, mu, epsilon_0)
+    a = metric.conformal_grr / metric.chi
 
-    return jnp.sum(matter.rho * proper_radial_shell_volume(metric))
+    # Sr stores S^r, so lower it before contracting with the radial shift.
+    energy_density = metric.alpha * matter.rho - metric.beta * a * matter.Sr
+
+    return jnp.sum(energy_density * proper_radial_shell_volume(metric))
 
 
 def dark_field_outer_boundary(dark_fields, metric, time=0.0):
