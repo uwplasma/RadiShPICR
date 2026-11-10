@@ -25,20 +25,31 @@ def dark_photon_time_derivatives(
     ``current_density`` is coordinate transport current, as for ordinary
     Maxwell evolution, so ``alpha * J^r`` equals ``current_density + beta *
     charge_density`` and enters Ampere's law with a minus sign. The actual
-    stage metric derivative is required even on a prescribed background.
+    stage metric derivative is required for lowering the electric-field RHS,
+    even on a prescribed background.
     """
 
     E_prime_r, A_prime_r, phi_prime = dark_fields
     alpha = metric.alpha
     beta = metric.beta
-    a = metric.conformal_grr / metric.chi
-    b = metric.conformal_gt / metric.chi
+    grr = metric.conformal_grr
+    gt = metric.conformal_gt
+    chi = metric.chi
+    a = grr / chi
     K = metric.Kh + 2.0 * metric.theta
     E_prime_up = E_prime_r / a
     A_prime_up = A_prime_r / a
 
-    da_dr = first_derivative(a, metric.dr, parity=1)
-    db_dr = first_derivative(b, metric.dr, parity=1)
+    # Differentiate the conformal factors separately: the physical metric
+    # diverges at a puncture and is not smooth across the parity stencil.
+    dgrr_dr = first_derivative(grr, metric.dr, parity=1)
+    dgt_dr = first_derivative(gt, metric.dr, parity=1)
+    dchi_dr = first_derivative(chi, metric.dr, parity=1)
+    dln_a_dr = dgrr_dr / grr - dchi_dr / chi
+    radial_divergence_factor = (
+        2.0 / metric.r + 0.5 * dgrr_dr / grr + dgt_dr / gt
+        - 1.5 * dchi_dr / chi
+    )
     dbeta_dr = first_derivative(beta, metric.dr, parity=-1)
     dE_prime_up_dr = first_derivative(E_prime_up, metric.dr, parity=-1)
     dA_prime_up_dr = first_derivative(A_prime_up, metric.dr, parity=-1)
@@ -50,8 +61,7 @@ def dark_photon_time_derivatives(
     alpha_A_prime_up = alpha * A_prime_up
     divergence_alpha_A = (
         first_derivative(alpha_A_prime_up, metric.dr, parity=-1)
-        + (2.0 / metric.r + 0.5 * da_dr / a + db_dr / b)
-        * alpha_A_prime_up
+        + radial_divergence_factor * alpha_A_prime_up
     )
 
     dE_prime_up_dt = (
@@ -60,23 +70,25 @@ def dark_photon_time_derivatives(
         - sin_chi * (current_density + beta * charge_density) / epsilon_0
         + alpha * mu**2 * A_prime_up
     )
-    dA_prime_up_dt = (
-        beta * dA_prime_up_dr - A_prime_up * dbeta_dr
-        - alpha * E_prime_up - dalpha_phi_dr / a
+    # Expand the covector Lie derivative through A'^r to retain its transport
+    # stencil while including the radial-metric and shift stretching terms.
+    dA_prime_r_dt = (
+        a * beta * dA_prime_up_dr
+        + (beta * dln_a_dr + dbeta_dr) * A_prime_r
+        - alpha * E_prime_r - dalpha_phi_dr
     )
     dphi_prime_dt = (
         beta * dphi_prime_dr - divergence_alpha_A
         + alpha * K * phi_prime
     )
 
-    # Lower the evolving vector using the actual RK metric RHS, rather
+    # Lower the electric-field RHS using the actual RK metric RHS, rather
     # than replacing metric evolution with a constraint or gauge identity.
     da_dt = (
         metric_rhs.conformal_grr / metric.chi
         - a * metric_rhs.chi / metric.chi
     )
     dE_prime_r_dt = a * dE_prime_up_dt + da_dt * E_prime_up
-    dA_prime_r_dt = a * dA_prime_up_dt + da_dt * A_prime_up
 
     return dE_prime_r_dt, dA_prime_r_dt, dphi_prime_dt
 
@@ -88,18 +100,26 @@ def dark_gauss_residual(
 
     This combination is the Proca constraint that the evolution preserves:
     taking the divergence of the ``E'`` equation and using the ``phi'``
-    equation gives d_t (D_i E'^i + mu**2 phi') = 0 in vacuum.
+    equation gives d_t (D_i E'^i + mu**2 phi') = 0 in flat-space vacuum.
     """
 
     E_prime_r, _, phi_prime = dark_fields
-    a = metric.conformal_grr / metric.chi
-    b = metric.conformal_gt / metric.chi
+    grr = metric.conformal_grr
+    gt = metric.conformal_gt
+    chi = metric.chi
+    a = grr / chi
     E_prime_up = E_prime_r / a
-    da_dr = first_derivative(a, metric.dr, parity=1)
-    db_dr = first_derivative(b, metric.dr, parity=1)
+    # Use the same conformal-factor expansion as in the field evolution.
+    dgrr_dr = first_derivative(grr, metric.dr, parity=1)
+    dgt_dr = first_derivative(gt, metric.dr, parity=1)
+    dchi_dr = first_derivative(chi, metric.dr, parity=1)
+    radial_divergence_factor = (
+        2.0 / metric.r + 0.5 * dgrr_dr / grr + dgt_dr / gt
+        - 1.5 * dchi_dr / chi
+    )
     divergence_E = (
         first_derivative(E_prime_up, metric.dr, parity=-1)
-        + (2.0 / metric.r + 0.5 * da_dr / a + db_dr / b) * E_prime_up
+        + radial_divergence_factor * E_prime_up
     )
 
     return epsilon_0 * (divergence_E + mu**2 * phi_prime) - sin_chi * charge_density
