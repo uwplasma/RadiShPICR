@@ -37,13 +37,19 @@ from RadiShPICR.initial_data import (
     solve_star_initial_data,
     surface_isotropic_radius,
 )
-from RadiShPICR.initial_data.oppenheimer_snyder import SHOOTING_METHOD
+from RadiShPICR.initial_data.oppenheimer_snyder import (
+    SHOOTING_METHOD, analytic_os_metric, isotropic_radius_from_areal,
+)
 from RadiShPICR.Z4C.particle_boundaries import (
     INNER_AREAL_GHOST_CELLS,
     deleting_inner_areal_radius_boundary,
 )
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.utils import freefall_collapse_time_step
+
+# "constrained" solves the discrete Hamiltonian constraint and calibrates the
+# rest mass; "paper-os" samples the analytic continuum solution instead.
+INITIAL_DATA = "constrained"
 
 TOTAL_STAR_MASS = 1.0
 SURFACE_AREAL_RADIUS = 10.0
@@ -53,8 +59,15 @@ Nr = 4000       # Number of Z4C radial cells.
 PPC = 300       # Particles per occupied initial deposition shell.
 R_WIND = 100.0  # Outer radial coordinate.
 SHAPE_MODE = "ruyten_density_conserving_quadratic_nonnegative"
+TOTAL_PARTICLES = None  # None uses PPC particles per occupied shell.
+SAVE_INTERVAL = None  # Coordinate-time spacing in units of initial mass.
 MAX_STEPS = None
 OUTPUT_DIRECTORY = DEMO_DIRECTORY / "outputs/evolution_data"
+
+# Wu and Most continuum setup: unit initial lapse, M=1, R0=5M. The analytic OS
+# lapse reference is only a like-for-like comparison for this preset.
+if INITIAL_DATA == "paper-os":
+    SURFACE_AREAL_RADIUS, DURATION = 5.0 * TOTAL_STAR_MASS, 60.0
 
 CFL = 0.2
 MINIMUM_TRIAL_TIME_STEP = 1.0e-7
@@ -78,18 +91,31 @@ def build_initial_state():
     )
     grid = build_radial_grid(R_WIND, Nr + 1)
 
-    # Match the initializer's nodal deposition shells, including the partial
-    # surface shell, in the initial isotropic chart (X_r = 1).
-    surface_r = surface_isotropic_radius(SURFACE_AREAL_RADIUS, TOTAL_STAR_MASS)
-    grid_indices = np.arange(grid.r_full.size)
-    shell_inner = np.maximum((grid_indices - 0.5) * grid.dr, 0.0)
-    shell_outer = np.minimum((grid_indices + 0.5) * grid.dr, surface_r)
-    occupied_shell_count = int(np.count_nonzero(shell_outer > shell_inner))
+    if TOTAL_PARTICLES is None:
+        # Match the initializer's nodal deposition shells, including the partial
+        # surface shell, in the initial isotropic chart (X_r = 1).
+        surface_r = surface_isotropic_radius(SURFACE_AREAL_RADIUS, TOTAL_STAR_MASS)
+        grid_indices = np.arange(grid.r_full.size)
+        shell_inner = np.maximum((grid_indices - 0.5) * grid.dr, 0.0)
+        shell_outer = np.minimum((grid_indices + 0.5) * grid.dr, surface_r)
+        total_particles = int(np.count_nonzero(shell_outer > shell_inner)) * PPC
+    else:
+        total_particles = TOTAL_PARTICLES
 
     particles, _, _ = initialize_oppenheimer_snyder_particles(
         grid, mass_density, TOTAL_STAR_MASS, SURFACE_AREAL_RADIUS,
-        occupied_shell_count * PPC, SHAPE_MODE,
+        total_particles, SHAPE_MODE,
     )
+    if INITIAL_DATA == "paper-os":
+        r = 0.5 * (grid.r_full[:-1] + grid.r_full[1:])
+        metric = analytic_os_metric(r, grid.dr, TOTAL_STAR_MASS,
+                                    SURFACE_AREAL_RADIUS, KAPPA, ETA, NU)
+        # The sampler returns areal positions. Map once with the analytic chart;
+        # do not run the constrained solve or recalibrate the rest weights.
+        particles.r = jnp.asarray(isotropic_radius_from_areal(
+            particles.r, TOTAL_STAR_MASS, SURFACE_AREAL_RADIUS))
+        return metric, particles, float(jnp.sum(particles.get_mass()))
+
     U_state = shoot_constrained_schwarzschild_initial_data(
         particles, grid, TOTAL_STAR_MASS,
         initial_center_A(TOTAL_STAR_MASS, SURFACE_AREAL_RADIUS),
@@ -126,6 +152,15 @@ def state_is_acceptable(metric, particles):
 
 
 def run_simulation():
+    if INITIAL_DATA not in ("constrained", "paper-os"):
+        raise ValueError(f"Unknown INITIAL_DATA preset: {INITIAL_DATA}")
+    if Nr < 8 or R_WIND <= surface_isotropic_radius(SURFACE_AREAL_RADIUS,
+                                                    TOTAL_STAR_MASS):
+        raise ValueError("The radial grid must resolve the star and its exterior.")
+    if CFL <= 0 or DURATION < 0 or (SAVE_INTERVAL is not None and SAVE_INTERVAL <= 0):
+        raise ValueError(
+            "CFL and save interval must be positive; duration must be nonnegative."
+        )
     if OUTPUT_DIRECTORY.exists() and any(OUTPUT_DIRECTORY.iterdir()):
         raise FileExistsError(
             f"Refusing to overwrite nonempty output directory: {OUTPUT_DIRECTORY}"
@@ -143,15 +178,24 @@ def run_simulation():
         total_effective_mass=float(np.sum(np.asarray(particles.get_mass()))),
         surface_areal_radius=SURFACE_AREAL_RADIUS,
         initial_isotropy_error=float(np.max(np.abs(np.asarray(grr - gT)))),
-        initial_metric="star_hamiltonian_completed_map",
-        initial_solver="z4c_hamiltonian_completed_map",
+        initial_metric=("analytic_os" if INITIAL_DATA == "paper-os"
+                        else "star_hamiltonian_completed_map"),
+        initial_data=INITIAL_DATA,
+        initial_solver=("analytic_no_mass_calibration" if INITIAL_DATA == "paper-os"
+                        else "z4c_hamiltonian_completed_map"),
         total_charge=0.0, initial_gravitational_mass=TOTAL_STAR_MASS,
-        shooting_method=SHOOTING_METHOD,
+        shooting_method=("not_used" if INITIAL_DATA == "paper-os" else SHOOTING_METHOD),
         shooting_tolerance=SHOOTING_TOLERANCE,
         shooting_max_iterations=SHOOTING_MAX_ITERATIONS,
         zero_shift=ZERO_SHIFT, kappa=KAPPA, eta=ETA, nu=NU,
         num_cells=Nr, particles_per_shell=PPC, r_max=R_WIND,
-        occupied_shell_count=int(particles.r.size // PPC),
+        total_particle_count=int(particles.r.size),
+        sampling="deterministic_radial_mass_stratification",
+        shift_gamma_coefficient=2.5,
+        # Only the exact mode "quadratic" takes the metric-corrected stencil;
+        # every other mode deposits with ordinary coordinate-space weights.
+        metric_corrected_deposition=(SHAPE_MODE == "quadratic"),
+        save_interval_over_mass=(-1.0 if SAVE_INTERVAL is None else SAVE_INTERVAL),
         shape_mode=SHAPE_MODE, particle_state_variables="r_ur",
         particle_boundary="areal_inner_open",
         particle_inner_ghost_cells=INNER_AREAL_GHOST_CELLS,
@@ -167,6 +211,9 @@ def run_simulation():
     time_tolerance = 1.0e-10 * TOTAL_STAR_MASS
     maximum_steps = math.inf if MAX_STEPS is None else MAX_STEPS
     stop_reason = "target_time"
+    last_saved_step, last_dt = 0, 0.0
+    save_index = 1
+    save_dt = None if SAVE_INTERVAL is None else SAVE_INTERVAL * TOTAL_STAR_MASS
 
     with BSSNFieldSeries(OUTPUT_DIRECTORY, metadata=metadata) as fields, \
             tqdm(total=DURATION, desc="evolving Z4c stellar collapse",
@@ -178,6 +225,9 @@ def run_simulation():
             trial_dt = min(CFL * float(metric.dr),
                            freefall_collapse_time_step(particles, metric),
                            remaining)
+            next_save = target_time if save_dt is None else min(save_index * save_dt, target_time)
+            if save_dt is not None:
+                trial_dt = min(trial_dt, next_save - evolution_time)
             accepted = False
             endpoint_trial = trial_dt < MINIMUM_TRIAL_TIME_STEP
             while trial_dt >= MINIMUM_TRIAL_TIME_STEP or endpoint_trial:
@@ -207,12 +257,19 @@ def run_simulation():
             metric, particles = trial_metric, trial_particles
             evolution_time += trial_dt
             step += 1
+            last_dt = trial_dt
+            if save_dt is not None and abs(evolution_time - next_save) <= time_tolerance:
+                evolution_time = next_save
             if target_time - evolution_time <= time_tolerance:
                 evolution_time = target_time
 
-            if step % SAVE_EVERY == 0:
+            scheduled_save = (step % SAVE_EVERY == 0 if save_dt is None
+                              else next_save - evolution_time <= time_tolerance)
+            if scheduled_save:
                 fields.write(metric, step, time=evolution_time, dt=trial_dt,
                              particles=particles)
+                last_saved_step = step
+                save_index += 1
 
             progress.update(trial_dt / TOTAL_STAR_MASS)
             progress.set_postfix(
@@ -223,7 +280,8 @@ def run_simulation():
         completed = target_time - evolution_time <= time_tolerance
         if not completed and step >= maximum_steps:
             stop_reason = "max_steps"
-        fields.write(metric, step, time=evolution_time, particles=particles)
+        if step != last_saved_step:
+            fields.write(metric, step, time=evolution_time, dt=last_dt, particles=particles)
 
         final_weight = float(np.sum(np.asarray(particles.weight)))
         result = dict(
@@ -242,6 +300,8 @@ def run_simulation():
         )
         fields.set_metadata(**result)
 
+    (OUTPUT_DIRECTORY / "run_summary.json").write_text(
+        json.dumps({**metadata, **result}, indent=2) + "\n")
     print(json.dumps({**metadata, **result}, indent=2))
 
     return result
