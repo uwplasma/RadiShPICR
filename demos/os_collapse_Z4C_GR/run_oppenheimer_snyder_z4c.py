@@ -58,7 +58,7 @@ DURATION = 150.0  # Final evolution t/M.
 Nr = 4000       # Number of Z4C radial cells.
 PPC = 300       # Particles per occupied initial deposition shell.
 R_WIND = 100.0  # Outer radial coordinate.
-SHAPE_MODE = "ruyten_density_conserving_quadratic_nonnegative"
+SHAPE_MODE = "quadratic"
 TOTAL_PARTICLES = None  # None uses PPC particles per occupied shell.
 SAVE_INTERVAL = None  # Coordinate-time spacing in units of initial mass.
 MAX_STEPS = None
@@ -192,9 +192,8 @@ def run_simulation():
         total_particle_count=int(particles.r.size),
         sampling="deterministic_radial_mass_stratification",
         shift_gamma_coefficient=2.5,
-        # Only the exact mode "quadratic" takes the metric-corrected stencil;
-        # every other mode deposits with ordinary coordinate-space weights.
-        metric_corrected_deposition=(SHAPE_MODE == "quadratic"),
+        # Retain this provenance flag for readers of historical runs.
+        metric_corrected_deposition=False,
         save_interval_over_mass=(-1.0 if SAVE_INTERVAL is None else SAVE_INTERVAL),
         shape_mode=SHAPE_MODE, particle_state_variables="r_ur",
         particle_boundary="areal_inner_open",

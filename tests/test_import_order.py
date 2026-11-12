@@ -8,7 +8,7 @@ def test_shape_factors_import_without_loading_z4c():
         [sys.executable, "-c", (
             "import sys; "
             "from RadiShPICR.particles.shape_factors import "
-            "metric_corrected_cic_stencil, metric_corrected_quadratic_stencil; "
+            "particle_deposition_stencil; "
             "from RadiShPICR.particles.shape_factors.cartesian_shapes import "
             "interpolate_field_to_particles; "
             "assert 'RadiShPICR.Z4C' not in sys.modules; "
