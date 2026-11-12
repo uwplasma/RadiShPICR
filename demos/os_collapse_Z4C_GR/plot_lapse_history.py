@@ -139,7 +139,7 @@ def save_lapse_history(history, mass, surface_areal_radius, output_directory):
         2, 1, sharex=True, figsize=(7.6, 6.4),
         gridspec_kw={"height_ratios": [3, 1]},
     )
-    figure.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.21, hspace=0.08)
+    figure.subplots_adjust(left=0.12, right=0.97, top=0.92, bottom=0.175, hspace=0.08)
 
     # Resample the reference onto the compared window. Drawing it in full would
     # autoscale a short run against the reference's entire descent to zero.
@@ -173,7 +173,7 @@ def save_lapse_history(history, mass, surface_areal_radius, output_directory):
         residual_axis.set_xlim(proper_time[0], proper_time[-1])
 
     figure.text(
-        0.5, 0.04,
+        0.5, 0.025,
         r"Central values use the innermost cell; $\tau_c$ is a finite-grid estimate."
         "\nThe analytic curve assumes an initially unit lapse, and is undefined"
         " past its first zero.",
