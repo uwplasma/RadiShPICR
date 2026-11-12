@@ -41,8 +41,7 @@ Pass `inner_open=True` for open-inner deposition, including when the callback
 is wrapped. Callback identity no longer selects deposition. `inner_open`,
 `EM_on`, `GR_on`, and `zero_shift` remain runtime JAX flags; the callback is a
 static argument when compiling the stepper. Ordinary parity deposition remains
-the default. Quadratic deposition is metric-corrected, while field gathering
-retains ordinary coordinate-space weights.
+the default. Deposition and field gathering use ordinary coordinate-space weights.
 
 `E_r` is a required keyword containing the cell-centered covariant electric
 field. Supply a zero grid array for EM-off runs. The stepper advances E_r with
@@ -174,8 +173,6 @@ functions are in `shape_factors.cartesian_shapes`.
 ```python
 from RadiShPICR.particles.shape_factors import (
     particle_deposition_stencil,
-    metric_corrected_cic_stencil,
-    metric_corrected_quadratic_stencil,
 )
 
 indices, even_weights, odd_weights = particle_deposition_stencil(
@@ -185,15 +182,11 @@ indices, even_weights, odd_weights = particle_deposition_stencil(
 
 The stencil axis comes first and the particle axis second. Weights are
 dimensionless; deposition multiplies them by particle mass or charge and
-divides by proper shell volume. The production dispatcher preserves ordinary
-nearest and linear shapes and uses metric-corrected quadratic TSC. Call
-`metric_corrected_cic_stencil(particles, metric, inner_open=False)` explicitly
-for corrected CIC. Both corrected APIs select their shape independently of
-the species' shape setting and read the existing Z4C metric arrays directly.
-They support `jax.jit`, origin parity, and unrenormalized open-inner truncation.
-The positivity limiter preserves total raw stencil weight but can leave a
-uniform-density residual on steep metrics; the outermost shell is not matched
-by the correction recurrence.
+divides by proper shell volume. The production dispatcher uses ordinary
+nearest (NGP), linear (CIC), and quadratic (TSC) shapes. With a reflecting
+origin, negative indices fold onto the physical grid and odd quantities
+change sign. Open-inner deposition discards ghost overlap without reflection
+or renormalization. All modes support `jax.jit`.
 
 
 Features:
