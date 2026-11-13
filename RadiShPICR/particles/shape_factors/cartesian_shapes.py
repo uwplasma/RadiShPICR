@@ -423,7 +423,7 @@ def shape_weights_at_point(
 
     When ``grid`` is supplied, the weights use the same clipped and normalized
     interior stencil as deposition and interpolation. The no-grid path uses
-    the original unbounded coordinate-space shape, without metric correction.
+    the original unbounded coordinate-space shape.
     """
 
     if grid is not None:

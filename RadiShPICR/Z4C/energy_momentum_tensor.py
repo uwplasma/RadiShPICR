@@ -273,14 +273,14 @@ def compute_radial_stress_tensor_component(
 
 def compute_hamiltonian_constraint(metric: Z4C_Metric):
 
-    # ASSUMES VACUUM and IGNORES THETA FOR NOW. NEEDS TO BE FIXED FOR NON-VACUUM CASES
+    # Geometric Hamiltonian residual; callers subtract 16*pi*Eulerian energy.
     
     chi = metric.chi
     grr = metric.conformal_grr
     gt = metric.conformal_gt
     Arr = metric.Arr
     At = metric.At
-    K  = metric.Kh
+    K  = metric.Kh + 2.0 * metric.theta
     r  = metric.r
 
     dchidr = first_derivative(chi, metric.dr, parity=1)
