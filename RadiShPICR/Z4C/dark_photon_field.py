@@ -9,16 +9,19 @@ D_i E'^i + mu**2 phi' = sin_chi * rho_q. Appendix A of those notes carries
 the opposite mass sign, which is tachyonic and is not used here.
 """
 
+import jax
 import jax.numpy as jnp
 
 from RadiShPICR.particles.shape_factors.common import proper_radial_shell_volume
-from RadiShPICR.Z4C.derivatives import first_derivative
+from RadiShPICR.Z4C.derivatives import (
+    first_derivative, upwind_first_derivative, sixth_derivative,
+)
 from RadiShPICR.Z4C.energy_momentum_tensor import dark_energy_momentum_tensor
 
 
 def dark_photon_time_derivatives(
     metric, metric_rhs, dark_fields, charge_density, current_density,
-    mu, sin_chi=0.0, epsilon_0=1.0,
+    mu, sin_chi=0.0, epsilon_0=1.0, *, dark_upwind=False, dark_ko=False,
 ):
     """Return the dark-field RHS, converted to covariant storage.
 
@@ -26,7 +29,10 @@ def dark_photon_time_derivatives(
     Maxwell evolution, so ``alpha * J^r`` equals ``current_density + beta *
     charge_density`` and enters Ampere's law with a minus sign. The actual
     stage metric derivative is required for lowering the electric-field RHS,
-    even on a prescribed background.
+    even on a prescribed background. ``dark_upwind`` biases only shift
+    transport, whose velocity is -beta. ``dark_ko`` uses metric.nu for
+    sixth-derivative dissipation of E'^r, A'^r and phi' at this RK stage.
+    Both options default to False and accept runtime JAX booleans.
     """
 
     E_prime_r, A_prime_r, phi_prime = dark_fields
@@ -51,9 +57,16 @@ def dark_photon_time_derivatives(
         - 1.5 * dchi_dr / chi
     )
     dbeta_dr = first_derivative(beta, metric.dr, parity=-1)
-    dE_prime_up_dr = first_derivative(E_prime_up, metric.dr, parity=-1)
-    dA_prime_up_dr = first_derivative(A_prime_up, metric.dr, parity=-1)
-    dphi_prime_dr = first_derivative(phi_prime, metric.dr, parity=1)
+    # Only transport derivatives are biased; gradients and divergences below
+    # retain their centered discretization and the original geometric terms.
+
+    dE_prime_up_dr = upwind_first_derivative(E_prime_up, metric.dr, beta, -1)
+    dA_prime_up_dr = upwind_first_derivative(A_prime_up, metric.dr, beta, -1)
+    dphi_prime_dr = upwind_first_derivative(phi_prime, metric.dr, beta, 1)
+    # use the upwind stencil for the transport derivative of each field, which
+    # is the only term that depends on the shift. The radial fields are odd
+    # and the scalar is even.
+
     dalpha_phi_dr = first_derivative(alpha * phi_prime, metric.dr, parity=1)
 
     # Separate the regular odd field from the 2/r factor. Differentiating
@@ -90,7 +103,20 @@ def dark_photon_time_derivatives(
     )
     dE_prime_r_dt = a * dE_prime_up_dt + da_dt * E_prime_up
 
-    return dE_prime_r_dt, dA_prime_r_dt, dphi_prime_dt
+    # Dissipate raised radial fields rather than puncture-singular covectors.
+    # Lower the artificial RHS without altering the actual metric-rate term.
+    ko_E, ko_A, ko_phi = jax.lax.cond(
+        dark_ko,
+        lambda _: (
+            a * metric.nu * metric.dr**5 / 64 * sixth_derivative(E_prime_up, metric.dr, -1),
+            a * metric.nu * metric.dr**5 / 64 * sixth_derivative(A_prime_up, metric.dr, -1),
+            metric.nu * metric.dr**5 / 64 * sixth_derivative(phi_prime, metric.dr, 1),
+        ),
+        lambda _: (jnp.zeros_like(E_prime_r), jnp.zeros_like(A_prime_r),
+                   jnp.zeros_like(phi_prime)),
+        operand=None,
+    )
+    return dE_prime_r_dt + ko_E, dA_prime_r_dt + ko_A, dphi_prime_dt + ko_phi
 
 
 def dark_gauss_residual(
