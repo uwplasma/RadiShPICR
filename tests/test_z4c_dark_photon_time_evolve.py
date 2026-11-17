@@ -131,10 +131,11 @@ class DarkPhotonTimeEvolveTests(unittest.TestCase):
             return jax.tree.map(jnp.zeros_like, stage_metric)._replace(alpha=matter.rho)
 
         def record_rhs(stage_metric, metric_derivative, fields, rho, J,
-                       mu, sin_chi=0.0, epsilon_0=1.0):
+                       mu, sin_chi=0.0, epsilon_0=1.0, **options):
+            self.assertTrue(options["dark_ko"])
             rhs_inputs.append((fields[0], rho, J, metric_derivative.alpha))
             return dark_rhs(stage_metric, metric_derivative, fields, rho, J,
-                            mu, sin_chi, epsilon_0)
+                            mu, sin_chi, epsilon_0, **options)
 
         with patch.multiple(
             time_evolve,
@@ -150,6 +151,7 @@ class DarkPhotonTimeEvolveTests(unittest.TestCase):
             result = rk4_step(source, metric, 0.2, E_r=zeros, EM_on=False,
                               GR_on=True, dark_fields=(zeros, zeros, zeros),
                               sin_chi=0.3, time=0.7, inner_open=True,
+                              dark_ko=True,
                               dark_field_boundary=boundary)
 
         self.assertClose(jnp.asarray(times), jnp.asarray([0.7, 0.8, 0.8, 0.9, 0.9]))

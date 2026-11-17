@@ -21,7 +21,7 @@ from RadiShPICR.Z4C.energy_momentum_tensor import dark_energy_momentum_tensor
 
 def dark_photon_time_derivatives(
     metric, metric_rhs, dark_fields, charge_density, current_density,
-    mu, sin_chi=0.0, epsilon_0=1.0, *, dark_upwind=False, dark_ko=False,
+    mu, sin_chi=0.0, epsilon_0=1.0, *, dark_ko=False,
 ):
     """Return the dark-field RHS, converted to covariant storage.
 
@@ -29,10 +29,10 @@ def dark_photon_time_derivatives(
     Maxwell evolution, so ``alpha * J^r`` equals ``current_density + beta *
     charge_density`` and enters Ampere's law with a minus sign. The actual
     stage metric derivative is required for lowering the electric-field RHS,
-    even on a prescribed background. ``dark_upwind`` biases only shift
-    transport, whose velocity is -beta. ``dark_ko`` uses metric.nu for
+    even on a prescribed background. Shift transport uses the fourth-order
+    upwind stencil for velocity -beta. ``dark_ko`` uses metric.nu for
     sixth-derivative dissipation of E'^r, A'^r and phi' at this RK stage.
-    Both options default to False and accept runtime JAX booleans.
+    This runtime JAX boolean defaults to False.
     """
 
     E_prime_r, A_prime_r, phi_prime = dark_fields

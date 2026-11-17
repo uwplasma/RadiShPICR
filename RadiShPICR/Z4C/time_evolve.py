@@ -328,7 +328,6 @@ def _stage_derivatives(
     dark_fields=None,
     mu=0.0,
     sin_chi=0.0,
-    dark_upwind=False,
     dark_ko=False,
 ):
     du_r_dt, du_phi_dt, dr_dt, dphi_dt = compute_geodesic_terms(
@@ -396,7 +395,7 @@ def _stage_derivatives(
         dark_derivatives = dark_photon_time_derivatives(
             metric, metric_derivative, dark_fields, charge_density,
             current_density, mu, sin_chi=sin_chi, epsilon_0=epsilon_0,
-            dark_upwind=dark_upwind, dark_ko=dark_ko,
+            dark_ko=dark_ko,
         )
         return (*derivatives, dark_derivatives)
     return derivatives
@@ -428,7 +427,6 @@ def rk4_step(
     sin_chi=0.0,
     time=0.0,
     dark_field_boundary=None,
-    dark_upwind=False,
     dark_ko=False,
 ):
     """Advance particles, electrostatics, and Z4C with one RK4 tableau.
@@ -461,9 +459,9 @@ def rk4_step(
 
     ``dark_field_boundary(fields, stage_metric, stage_time)`` supplies stage
     boundary data. The default suppresses incoming outer characteristics.
-    ``dark_upwind`` and ``dark_ko`` are runtime booleans, defaulting to False.
-    They enable biased shift transport and metric.nu KO dissipation at every
-    dark-field RK stage, including when GR_on=False.
+    Dark-field shift transport uses fourth-order upwind derivatives.
+    The runtime flag ``dark_ko`` (default False) enables metric.nu KO
+    dissipation at every dark-field RK stage, including when GR_on=False.
     Pass callbacks as static arguments when directly jitting this function,
     or capture them in a closure. The caller advances ``time`` between steps.
     """
@@ -499,7 +497,6 @@ def rk4_step(
         dark_fields,
         mu,
         sin_chi,
-        dark_upwind,
         dark_ko,
     )
     k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt, k1_dE_r_dt = k1[:6]
@@ -535,7 +532,6 @@ def rk4_step(
         dark_fields_k2,
         mu,
         sin_chi,
-        dark_upwind,
         dark_ko,
     )
     k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt, k2_dE_r_dt = k2[:6]
@@ -572,7 +568,6 @@ def rk4_step(
         dark_fields_k3,
         mu,
         sin_chi,
-        dark_upwind,
         dark_ko,
     )
     k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt, k3_dE_r_dt = k3[:6]
@@ -609,7 +604,6 @@ def rk4_step(
         dark_fields_k4,
         mu,
         sin_chi,
-        dark_upwind,
         dark_ko,
     )
     k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt, k4_dE_r_dt = k4[:6]
