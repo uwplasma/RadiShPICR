@@ -17,6 +17,7 @@ from RadiShPICR.initial_data.oppenheimer_snyder import (
 from RadiShPICR.initial_data.puncture import (
     puncture_electric_field,
     puncture_metric,
+    schwarzschild_trumpet_metric,
 )
 
 __all__ = [
@@ -27,6 +28,7 @@ __all__ = [
     "isotropic_radius_from_areal",
     "puncture_electric_field",
     "puncture_metric",
+    "schwarzschild_trumpet_metric",
     "shoot_constrained_schwarzschild_initial_data",
     "solve_charged_star_initial_data",
     "solve_star_initial_data",

@@ -297,3 +297,19 @@ def compute_hamiltonian_constraint(metric: Z4C_Metric):
 
 
     return constraint
+
+
+def compute_radial_momentum_constraint(metric: Z4C_Metric):
+    """Geometric part of D_j K^j_r - ∂_r K. Subtract 8π S_r for matter."""
+    grr, gt, chi = metric.conformal_grr, metric.conformal_gt, metric.chi
+    A_radial = metric.Arr / grr
+    A_angular = metric.At / gt
+    K = metric.Kh + 2.0 * metric.theta
+
+    # Twice Γ^θ_{θr} = ∂_r ln(r² gt / chi). Differentiate the regular
+    # conformal factors separately at the puncture.
+    angular_connection = (2.0 / metric.r + first_derivative(gt, metric.dr, parity=1) / gt
+                          - first_derivative(chi, metric.dr, parity=1) / chi)
+    return (first_derivative(A_radial, metric.dr, parity=1)
+            - (2.0 / 3.0) * first_derivative(K, metric.dr, parity=1)
+            + angular_connection * (A_radial - A_angular))

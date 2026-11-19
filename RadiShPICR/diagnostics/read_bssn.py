@@ -23,7 +23,7 @@ from typing import NamedTuple
 import jax.numpy as jnp
 import numpy as np
 
-from RadiShPICR.diagnostics.bssn_openpmd import FIELD_NAMES, SOURCE_NAMES
+from RadiShPICR.diagnostics.bssn_openpmd import DARK_FIELD_NAMES, FIELD_NAMES, SOURCE_NAMES
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
@@ -32,9 +32,7 @@ __all__ = ["Snapshot", "iter_snapshots", "read_metadata", "final_snapshot"]
 _DAMPING_DEFAULTS = {"kappa": 1.0, "eta": 2.0, "nu": 0.02}
 
 
-class Snapshot(NamedTuple):
-    """One iteration of a series, as live objects."""
-
+class _SnapshotFields(NamedTuple):
     step: int
     time: float
     metric: Z4C_Metric
@@ -42,6 +40,13 @@ class Snapshot(NamedTuple):
     charge_density: jnp.ndarray
     particles: tuple
     areal_radius: jnp.ndarray
+
+
+class Snapshot(_SnapshotFields):
+    """One iteration, with optional Proca fields alongside the original tuple."""
+
+    # Keep the seven positional fields for readers that unpack a snapshot.
+    dark_fields: tuple | None = None
 
     def species(self, name=None):
         """Return one species by name, or the only one when there is one."""
@@ -155,6 +160,10 @@ def iter_snapshots(path, stride=1, with_particles=True):
                 for name in (*FIELD_NAMES, *SOURCE_NAMES, "r", "areal_radius")
             }
             dr = float(meshes["r"].grid_spacing[0])
+            dark_chunks = None
+            if DARK_FIELD_NAMES[0] in meshes:
+                dark_chunks = [meshes[name][io.Mesh.SCALAR].load_chunk()
+                               for name in DARK_FIELD_NAMES]
 
             species = []
             if with_particles:
@@ -175,7 +184,7 @@ def iter_snapshots(path, stride=1, with_particles=True):
                 dr=dr,
             )
 
-            yield Snapshot(
+            snapshot = Snapshot(
                 step=int(step),
                 time=float(iteration.time),
                 metric=metric,
@@ -184,6 +193,9 @@ def iter_snapshots(path, stride=1, with_particles=True):
                 particles=tuple(_build_species(*one) for one in species),
                 areal_radius=jnp.asarray(chunks["areal_radius"]),
             )
+            if dark_chunks is not None:
+                snapshot.dark_fields = tuple(jnp.asarray(field) for field in dark_chunks)
+            yield snapshot
     finally:
         series.close()
 
