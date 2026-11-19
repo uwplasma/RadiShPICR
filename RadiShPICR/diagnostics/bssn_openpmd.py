@@ -227,10 +227,12 @@ class BSSNFieldSeries:
         )
 
         # charge and mass of one physical particle, constant when the species
-        # was built with scalars.
+        # was built with scalars. plasmaFrequency is the recorded local plasma
+        # frequency; it is provenance and does not affect deposition.
         for record_name, values in (
             ("charge", particles.charges),
             ("mass", particles.masses),
+            ("plasmaFrequency", particles.plasma_frequency),
         ):
             record = species[record_name]
             record.unit_dimension = {}

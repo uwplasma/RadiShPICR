@@ -103,6 +103,12 @@ def _read_species(io, species, name):
             arrays[f"{record}_{label}"] = species[record][label].load_chunk()
     for record in ("weighting", "charge", "mass"):
         arrays[record] = species[record][io.Record_Component.SCALAR].load_chunk()
+    # Series written before the plasma normalization existed have no such
+    # record; those species simply carry no recorded plasma frequency.
+    if "plasmaFrequency" in species:
+        arrays["plasmaFrequency"] = (
+            species["plasmaFrequency"][io.Record_Component.SCALAR].load_chunk()
+        )
 
     return name, arrays, str(species.get_attribute("shapeMode"))
 
@@ -124,6 +130,7 @@ def _build_species(name, arrays, shape_mode):
         phi=jnp.asarray(arrays["position_phi"]),
         uphi=jnp.asarray(arrays["momentum_phi"]),
         shape_mode=shape_mode,
+        plasma_frequency=collapse(arrays.get("plasmaFrequency", 0.0)),
     )
 
 
