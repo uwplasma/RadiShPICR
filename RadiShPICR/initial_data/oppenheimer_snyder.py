@@ -373,11 +373,7 @@ def solve_constrained_star_initial_data(particles, grid, total_mass, tolerance=1
         raise ValueError("Star initial data require zero particle momenta.")
 
     def scaled_particles(factor):
-        return particle_species(
-            particles.name, particles.charges, particles.masses * factor,
-            particles.weight, particles.r, particles.ur, particles.phi,
-            particles.uphi, particles.shape_mode,
-        )
+        return particles.replace(masses=particles.masses * factor)
 
     @jax.jit
     def solve(factor):

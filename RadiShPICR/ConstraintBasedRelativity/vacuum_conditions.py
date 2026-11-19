@@ -105,19 +105,10 @@ def rescale_to_vacuum_coordinates(
     Sr = Sr / X_r
     source_terms = (mass_density, charge_density, Srr, Sr)
 
-    rescaled_particles = type(particles)(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
-        weight=particles.weight,
-        # r stores r_s = A r and ur stores u_r / A in constrained relativity;
-        # both lapse-freezing variables are invariant under r* = X_r r.
-        r=particles.r,
-        ur=particles.ur,
-        phi=particles.phi,
-        uphi=particles.uphi,
-        shape_mode=particles.shape_mode,
-    )
+    # r stores r_s = A r and ur stores u_r / A in constrained relativity;
+    # both lapse-freezing variables are invariant under r* = X_r r, so the
+    # species is carried through unchanged.
+    rescaled_particles = particles.replace()
 
     rescaled_U_state = (
         A,

@@ -33,19 +33,7 @@ def step(particles, r_grid, dr, dt):
 
 
 def _copy_particle_state(particles, rs, phi, ur_over_A):
-    stage_particles = type(particles)(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
-        weight=particles.weight,
-        r=rs,
-        ur=ur_over_A,
-        phi=phi,
-        uphi=particles.uphi,
-        shape_mode=particles.shape_mode,
-    )
-
-    return stage_particles
+    return particles.replace(r=rs, ur=ur_over_A, phi=phi)
 
 
 def _particle_derivatives(
