@@ -11,7 +11,9 @@ from RadiShPICR.Z4C.dark_photon_field import (
     dark_photon_time_derivatives,
 )
 from RadiShPICR.Z4C.electric_field import compute_electrostatic_matter_terms
-from RadiShPICR.Z4C.energy_momentum_tensor import dark_energy_momentum_tensor
+from RadiShPICR.Z4C.energy_momentum_tensor import (
+    compute_radial_momentum_constraint, dark_energy_momentum_tensor,
+)
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 
@@ -42,6 +44,23 @@ def spherical_bessel(x):
 class DarkPhotonFieldTests(unittest.TestCase):
     def assert_close(self, actual, expected, rtol=2.0e-12, atol=2.0e-12):
         self.assertTrue(bool(jnp.allclose(actual, expected, rtol=rtol, atol=atol)))
+
+    def test_radial_momentum_constraint_with_manufactured_proca_source(self):
+        metric = flat_metric(radius=2.0)
+        self.assert_close(compute_radial_momentum_constraint(metric), 0.0)
+        r = metric.r
+        gt, chi = 1.0 + 0.2 * r**2, 1.0 + 0.1 * r**2
+        grr = gt**-2
+        # Mixed trace-free components (r², -r²/2, -r²/2) and K = 3r²/4.
+        metric = metric._replace(conformal_grr=grr, conformal_gt=gt, chi=chi,
+                                 Arr=grr * r**2, At=-gt * r**2 / 2.0,
+                                 Kh=r**2 / 4.0, theta=r**2 / 4.0)
+        geometric = 4.0 * r + 1.5 * r**2 * (0.4 * r / gt - 0.2 * r / chi)
+        # For μ = φ' = 1 the covariant Proca momentum S_r equals A'_r.
+        fields = (jnp.zeros_like(r), geometric / (8.0 * jnp.pi), jnp.ones_like(r))
+        matter = dark_energy_momentum_tensor(metric, fields, mu=1.0)
+        residual = compute_radial_momentum_constraint(metric) - 8.0 * jnp.pi * grr / chi * matter.Sr
+        self.assert_close(residual, 0.0)
 
     def test_positive_action_tensor_and_energy(self):
         metric = flat_metric()

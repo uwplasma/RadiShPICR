@@ -13,11 +13,55 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from demos.dark_photon_superradiant_cloud import simulation_parameters as p
 from demos.dark_photon_superradiant_cloud.initial_cloud import initial_cloud
 from RadiShPICR.diagnostics import BSSNFieldSeries
-from RadiShPICR.initial_data import schwarzschild_trumpet_metric
+from RadiShPICR.initial_data import (
+    cold_plasma_shell,
+    neutral_plasma_shell,
+    schwarzschild_trumpet_metric,
+)
 from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.apparent_horizon import find_apparent_horizon
 from RadiShPICR.Z4C.time_evolve import rk4_step
 from RadiShPICR.Z4C.utils import generate_r_grid
+
+
+def _build_plasma(metric):
+    """Return the kinetically mixed shell and its normalization diagnostics.
+
+    The shell is specified by its plasma frequency, so no geometrized electron
+    charge or mass is ever formed. Its rest-mass density follows as
+    EPSILON_0 * omega_p**2 / alpha_s**2 and is reported for the mass budget.
+    """
+
+    if p.NEUTRALIZE:
+        return neutral_plasma_shell(
+            metric, p.PLASMA_FREQUENCY, r_min=p.PLASMA_R_MIN,
+            r_max=p.PLASMA_R_MAX, particles_per_cell=p.PARTICLES_PER_CELL,
+            charge_to_mass=p.PLASMA_CHARGE / p.PLASMA_MASS,
+            epsilon_0=p.EPSILON_0,
+        )
+    return cold_plasma_shell(
+        metric, "electrons", p.PLASMA_FREQUENCY, charge=p.PLASMA_CHARGE,
+        mass=p.PLASMA_MASS, r_min=p.PLASMA_R_MIN, r_max=p.PLASMA_R_MAX,
+        particles_per_cell=p.PARTICLES_PER_CELL, epsilon_0=p.EPSILON_0,
+    )
+
+
+def _plasma_metadata(plasma, prefix="plasma"):
+    """Flatten the helper diagnostics into scalar series attributes.
+
+    set_metadata stores bool/int/float/str only, so the nested electron and
+    ion entries are flattened rather than passed through.
+    """
+
+    if plasma is None:
+        return {}
+    flattened = {}
+    for key, value in plasma.items():
+        if isinstance(value, dict):
+            flattened.update(_plasma_metadata(value, f"{prefix}_{key}"))
+        else:
+            flattened[f"{prefix}_{key}"] = value
+    return flattened
 
 
 def run_simulation():
@@ -39,8 +83,34 @@ def run_simulation():
     dt = p.CFL * float(metric.dr)
     num_steps = round(p.EVOLVE_TIME / dt)
     empty = jnp.empty(0)
-    vacuum = particle_species("vacuum", 0.0, 1.0, empty, empty, empty, empty, empty, "quadratic")
     zeros = jnp.zeros_like(r)
+    if p.PLASMA_FREQUENCY is None:
+        particles = particle_species(
+            "vacuum", 0.0, 1.0, empty, empty, empty, empty, empty, "quadratic")
+        # The vacuum cloud is normalized in G = c = epsilon_0 = 1; EPSILON_0 is
+        # the rescaled eps0/lambda**2 and applies only once a plasma is present.
+        sin_chi, plasma, epsilon_0 = 0.0, None, 1.0
+    else:
+        particles, plasma = _build_plasma(metric)
+        sin_chi, epsilon_0 = p.SIN_CHI, p.EPSILON_0
+        # Plasma oscillations are the fastest timescale once the shell is on.
+        if p.PLASMA_FREQUENCY * dt > 0.1:
+            raise ValueError(
+                f"omega_p * dt = {p.PLASMA_FREQUENCY * dt:.3g} does not resolve "
+                "the plasma oscillation; lower CFL or PLASMA_FREQUENCY."
+            )
+        # EPSILON_0 sets the plasma rest mass at fixed omega_p, and the ions
+        # carry mass_ratio times the electron density. It is easy to ask for a
+        # shell heavier than the hole without noticing, so say so plainly.
+        rest_mass = float(jnp.sum(particles.get_mass()))
+        print(f"Plasma rest mass {rest_mass:.3e} = {rest_mass / p.MASS:.3g} M "
+              f"(omega_p={p.PLASMA_FREQUENCY:g}, epsilon_0={p.EPSILON_0:g}).")
+        if p.BACKREACTION and rest_mass > 0.01 * p.MASS:
+            raise ValueError(
+                f"The shell weighs {rest_mass / p.MASS:.3g} M and would dominate "
+                "the spacetime. Lower EPSILON_0 (rest mass scales with it at "
+                "fixed omega_p), shrink the shell, or set BACKREACTION = False."
+            )
 
     @partial(jax.jit, static_argnames=("count",))
     def advance(metric, fields, start_step, count):
@@ -49,8 +119,9 @@ def run_simulation():
         def step(state, step_number):
             metric, fields = state
             _, metric, _, _, fields = rk4_step(
-                vacuum, metric, dt, E_r=zeros, EM_on=False, GR_on=p.BACKREACTION,
-                dark_fields=fields, mu=p.MU, sin_chi=0.0, dark_ko=p.DARK_KO,
+                particles, metric, dt, E_r=zeros, EM_on=False, GR_on=p.BACKREACTION,
+                dark_fields=fields, mu=p.MU, sin_chi=sin_chi,
+                epsilon_0=epsilon_0, dark_ko=p.DARK_KO,
                 time=step_number * dt,
             )
             return (metric, fields), fields[1][probe]
@@ -65,6 +136,8 @@ def run_simulation():
         sample_every=p.SAMPLE_EVERY, snapshot_every=p.SNAPSHOT_EVERY,
         probe_index=probe, probe_r=float(r[probe]), probe_initial_R=float(R[probe]),
         initial_horizon_r=float(horizon), completed=False,
+        sin_chi=sin_chi, epsilon_0=epsilon_0,
+        plasma_frequency=p.PLASMA_FREQUENCY, **_plasma_metadata(plasma),
     )
     with (output / "probe.csv").open("x") as probe_file, BSSNFieldSeries(output, metadata=metadata) as series:
         probe_file.write("time,A_prime_r\n")

@@ -101,6 +101,19 @@ def test_iteration_order_and_stride(tmp_path):
     assert [s.step for s in iter_snapshots(path, stride=2)] == [0, 10, 15]
 
 
+def test_optional_dark_fields_round_trip_in_rk_order(tmp_path):
+    metric = build_metric()
+    dark_fields = (metric.r, -2.0 * metric.r, 3.0 + metric.r)
+    with BSSNFieldSeries(tmp_path) as series:
+        series.write(metric, 0)
+        series.write(metric, 1, dark_fields=dark_fields)
+    ordinary, proca = iter_snapshots(tmp_path)
+    assert ordinary.dark_fields is None
+    assert len(ordinary) == len(proca) == 7
+    for saved, expected in zip(proca.dark_fields, dark_fields, strict=True):
+        assert jnp.array_equal(saved, expected)
+
+
 def test_species_lookup_by_name_and_ambiguity(tmp_path):
     metric = build_metric()
     dust, ions = build_particles()
@@ -133,3 +146,49 @@ def test_reading_a_directory_finds_the_default_series(tmp_path):
     assert final_snapshot(tmp_path).step == 0
     with pytest.raises(FileNotFoundError):
         final_snapshot(tmp_path / "nothing")
+
+
+def test_recorded_plasma_frequency_round_trips(tmp_path):
+    """A species specified by its plasma frequency keeps it through the file.
+
+    The normalization itself lives in the weights, so this records provenance
+    rather than a source term -- but losing it would leave a reloaded run with
+    no way to say which plasma it represents.
+    """
+
+    from RadiShPICR.particles import particle_species
+
+    metric = build_metric()
+    plasma = particle_species(
+        name="plasma", charge=-1.0, mass=1.0,
+        weight=jnp.asarray([3.0e-9, 4.0e-9, 5.0e-9]),
+        r=jnp.asarray([0.2, 0.4, 0.6]), ur=jnp.zeros(3),
+        phi=jnp.zeros(3), uphi=jnp.zeros(3), shape_mode="quadratic",
+        plasma_frequency=0.375,
+    )
+    with BSSNFieldSeries(tmp_path) as fields:
+        path = fields.write(metric, 0, time=0.0, particles=plasma)
+
+    restored = final_snapshot(path).species()
+
+    assert np.allclose(np.asarray(restored.plasma_frequency), 0.375)
+    # The weights carry the normalization, so they must survive exactly.
+    assert np.array_equal(
+        np.asarray(restored.weight), np.asarray(plasma.weight)
+    )
+
+
+def test_species_with_no_recorded_frequency_round_trips_as_zero(tmp_path):
+    """An ordinary species carries no frequency and must stay that way.
+
+    The reader also tolerates a missing record outright, so series written
+    before it existed keep loading; that branch cannot be reached through the
+    current writer, which always emits it.
+    """
+
+    path, _, dust = write_series(tmp_path, steps=(0,))
+
+    restored = final_snapshot(path).species()
+
+    assert np.allclose(np.asarray(restored.plasma_frequency), 0.0)
+    assert np.array_equal(np.asarray(restored.r), np.asarray(dust.r))
