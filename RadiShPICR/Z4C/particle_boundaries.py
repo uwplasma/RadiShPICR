@@ -15,16 +15,12 @@ def _delete_particles(particles, delete):
     weight = jnp.where(delete, 0.0, particles.weight)
     inactive = weight == 0.0
 
-    return type(particles)(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
+    return particles.replace(
         weight=weight,
         r=jnp.where(inactive, 0.0, particles.r),
         ur=jnp.where(inactive, 0.0, particles.ur),
         phi=jnp.where(inactive, 0.0, particles.phi),
         uphi=jnp.where(inactive, 0.0, particles.uphi),
-        shape_mode=particles.shape_mode,
     )
 
 

@@ -252,17 +252,7 @@ def _copy_particle_state(particles, r, phi, ur, uphi, weight=None):
     if weight is None:
         weight = particles.weight
 
-    return type(particles)(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
-        weight=weight,
-        r=r,
-        ur=ur,
-        phi=phi,
-        uphi=uphi,
-        shape_mode=particles.shape_mode,
-    )
+    return particles.replace(weight=weight, r=r, ur=ur, phi=phi, uphi=uphi)
 
 
 def _zero_metric_derivative(metric):
