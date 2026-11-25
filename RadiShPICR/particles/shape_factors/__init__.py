@@ -1,8 +1,4 @@
-"""Coordinate-space shapes and metric-corrected particle deposition.
-
-Existing linear deposition remains ordinary CIC. Call
-metric_corrected_cic_stencil explicitly to use the new CIC correction.
-"""
+"""Ordinary coordinate-space deposition with radial parity and open boundaries."""
 
 import jax.numpy as jnp
 
@@ -11,27 +7,20 @@ from .cartesian_shapes import (
     apply_stencil_boundaries,
 )
 from .common import inner_areal_radius_index
-from .metric_corrected_cic import metric_corrected_cic_stencil
-from .metric_correct_quadratic import metric_corrected_quadratic_stencil
 
 __all__ = [
     "particle_deposition_stencil",
-    "metric_corrected_cic_stencil",
-    "metric_corrected_quadratic_stencil",
 ]
 
 
 def particle_deposition_stencil(particles, metric, inner_open=False):
-    """Return the production stencil: corrected TSC or ordinary NGP/CIC.
+    """Return the production stencil: ordinary NGP, CIC, or quadratic TSC.
 
     The tuple contains indices, even weights, and odd weights, with the
     stencil axis first and the particle axis second.
     """
 
     shape_mode = particles.get_shape()
-    if shape_mode == "quadratic":
-        return metric_corrected_quadratic_stencil(particles, metric, inner_open)
-
     raw_indices, raw_weights = _unbounded_raw_radial_shape_stencil(
         particles.r, metric.r, metric.dr, shape_mode,
     )

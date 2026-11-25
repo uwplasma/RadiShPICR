@@ -15,8 +15,8 @@ Layout:
     :math:`E_r = \\gamma_{rr} E^r` that the RK stages carry, not the orthonormal
     one; both sit on the same cell centres as the metric fields.  A vacuum or
     metric-only run has neither, so they are filled with zeros and marked with
-    the record attribute ``provided = False``.  Every iteration of every series
-    therefore holds the same set of records.
+    the record attribute ``provided = False``. Proca runs also store the
+    covariant radial fields ``E_prime_r`` and ``A_prime_r`` and scalar ``phi_prime``.
 
     The radial coordinate of the output is the areal radius
     :math:`R = r\\sqrt{\\tilde\\gamma_T/\\chi}`, which is neither uniform nor
@@ -55,7 +55,7 @@ from pathlib import Path
 
 import numpy as np
 
-__all__ = ["BSSNFieldSeries", "FIELD_NAMES", "SOURCE_NAMES"]
+__all__ = ["BSSNFieldSeries", "FIELD_NAMES", "SOURCE_NAMES", "DARK_FIELD_NAMES"]
 
 FIELD_NAMES = (
     "alpha",
@@ -71,6 +71,7 @@ FIELD_NAMES = (
 )
 
 SOURCE_NAMES = ("E_r", "charge_density")
+DARK_FIELD_NAMES = ("E_prime_r", "A_prime_r", "phi_prime")
 
 
 def _package_version():
@@ -226,10 +227,12 @@ class BSSNFieldSeries:
         )
 
         # charge and mass of one physical particle, constant when the species
-        # was built with scalars.
+        # was built with scalars. plasmaFrequency is the recorded local plasma
+        # frequency; it is provenance and does not affect deposition.
         for record_name, values in (
             ("charge", particles.charges),
             ("mass", particles.masses),
+            ("plasmaFrequency", particles.plasma_frequency),
         ):
             record = species[record_name]
             record.unit_dimension = {}
@@ -248,6 +251,7 @@ class BSSNFieldSeries:
         E_r=None,
         charge_density=None,
         particles=None,
+        dark_fields=None,
     ):
         """Write one iteration holding the current ``Z4C_Metric`` fields.
 
@@ -270,6 +274,7 @@ class BSSNFieldSeries:
             particles: One ``particle_species`` or a sequence of them, written
                 as openPMD species under this iteration.  A run without
                 particles leaves this out and the iteration carries none.
+            dark_fields: Optional (E_prime_r, A_prime_r, phi_prime) RK state.
 
         Returns:
             The path of the series being written.
@@ -303,6 +308,10 @@ class BSSNFieldSeries:
                 keep,
                 provided=provided,
             )
+
+        if dark_fields is not None:
+            for name, values in zip(DARK_FIELD_NAMES, dark_fields, strict=True):
+                self._store(iteration.meshes[name], values, metric.dr, keep)
 
         if particles is not None:
             species_list = (

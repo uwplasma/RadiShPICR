@@ -21,8 +21,12 @@ from RadiShPICR.initial_data import (
     isotropic_radius_from_areal,
     puncture_electric_field,
     puncture_metric,
+    schwarzschild_trumpet_metric,
     surface_isotropic_radius,
 )
+from RadiShPICR.Z4C.apparent_horizon import find_apparent_horizon
+from RadiShPICR.Z4C.curvature_invariants import misner_sharp_mass
+from RadiShPICR.Z4C.derivatives import first_derivative
 from RadiShPICR.Z4C.utils import freefall_collapse_time_step, generate_r_grid
 
 MASS = 1.0
@@ -125,6 +129,33 @@ def test_puncture_reduces_to_schwarzschild_at_zero_charge():
     for name in ("beta", "Kh", "Arr", "At", "theta", "Gamma"):
         assert np.allclose(np.asarray(getattr(metric, name)), 0.0)
     assert float(metric.dr) == pytest.approx(float(r[1] - r[0]))
+
+
+@pytest.mark.parametrize("mass", [1.0, 2.5])
+def test_schwarzschild_trumpet_geometry(mass):
+    horizon_errors, inner_errors = [], []
+    for n in (256, 1024):
+        r = generate_r_grid(0.0, 12.0 * mass, n)
+        metric = schwarzschild_trumpet_metric(r, mass)
+        R = r / jnp.sqrt(metric.chi)
+        horizon_r, horizon_R = find_apparent_horizon(metric)
+        horizon_errors.append(abs(horizon_R / mass - 2.0))
+        inner_errors.append(abs(R[0] / mass - 1.3124083))
+
+        # Isotropic radial normalization and future-horizon branch.
+        assert abs(horizon_r / mass - 0.8304) < 5.0e-4
+        assert jnp.all(metric.beta > 0.0)
+        assert jnp.max(jnp.abs(misner_sharp_mass(metric)[R > 2*mass] / mass - 1)) < 1.0e-7
+
+        # Independently differentiate the sampled lapse for 1+log stationarity.
+        dalpha_dr = first_derivative(metric.alpha, metric.dr, parity=1)
+        lapse_rate = metric.beta * dalpha_dr - 2.0 * metric.alpha * metric.Kh
+        assert jnp.max(jnp.abs(mass * lapse_rate[R > 2*mass])) < 5.0e-7
+        assert jnp.all(metric.Arr + 2.0 * metric.At == 0.0)
+
+    assert horizon_errors[1] < 0.2 * horizon_errors[0]
+    assert inner_errors[1] < 0.25 * inner_errors[0]
+    assert inner_errors[1] < 0.004
 
 
 def test_charged_puncture_matches_the_reissner_nordstrom_conformal_factor():

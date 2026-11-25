@@ -10,7 +10,12 @@ from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 from RadiShPICR.Z4C.energy_momentum_tensor import (
     MatterTerms,
     compute_radial_matter_terms,
+    dark_energy_momentum_tensor,
     initialize_vacuum_matter_terms,
+)
+from RadiShPICR.Z4C.dark_photon_field import (
+    dark_field_outer_boundary,
+    dark_photon_time_derivatives,
 )
 from RadiShPICR.Z4C.electric_field import (
     compute_electrovac_matter_terms,
@@ -247,17 +252,7 @@ def _copy_particle_state(particles, r, phi, ur, uphi, weight=None):
     if weight is None:
         weight = particles.weight
 
-    return type(particles)(
-        name=particles.name,
-        charge=particles.charges,
-        mass=particles.masses,
-        weight=weight,
-        r=r,
-        ur=ur,
-        phi=phi,
-        uphi=uphi,
-        shape_mode=particles.shape_mode,
-    )
+    return particles.replace(weight=weight, r=r, ur=ur, phi=phi, uphi=uphi)
 
 
 def _zero_metric_derivative(metric):
@@ -320,20 +315,46 @@ def _stage_derivatives(
     GR_on,
     inner_open,
     zero_shift,
+    dark_fields=None,
+    mu=0.0,
+    sin_chi=0.0,
+    dark_ko=False,
 ):
     du_r_dt, du_phi_dt, dr_dt, dphi_dt = compute_geodesic_terms(
         particles,
         metric,
     )
-    current_density, lorentz_force, field_matter = _electrostatic_stage_state(
-        particles,
-        metric,
-        E_r,
-        dr_dt,
-        epsilon_0,
-        EM_on,
-        inner_open,
-    )
+    if dark_fields is None:
+        current_density, lorentz_force, field_matter = _electrostatic_stage_state(
+            particles,
+            metric,
+            E_r,
+            dr_dt,
+            epsilon_0,
+            EM_on,
+            inner_open,
+        )
+    else:
+        # Dark sources still need the particle current when ordinary EM is off.
+        charge_density = compute_radial_charge_density(
+            particles, metric, inner_open=inner_open,
+        )
+        current_density = compute_radial_current_density(
+            particles, metric, dr_dt, inner_open=inner_open,
+        )
+        ordinary_E_r = jax.lax.cond(
+            EM_on, lambda _: E_r, lambda _: jnp.zeros_like(E_r), operand=None,
+        )
+        lorentz_force = compute_radial_lorentz_force(
+            particles, metric, ordinary_E_r + sin_chi * dark_fields[0],
+        )
+        ordinary_matter = compute_electrostatic_matter_terms(
+            metric, ordinary_E_r, epsilon_0=epsilon_0,
+        )
+        dark_matter = dark_energy_momentum_tensor(
+            metric, dark_fields, mu, epsilon_0=epsilon_0,
+        )
+        field_matter = _add_matter_terms(ordinary_matter, dark_matter)
     du_r_dt = du_r_dt + lorentz_force
 
     def dynamical_metric_derivative(_):
@@ -359,7 +380,15 @@ def _stage_derivatives(
         operand=None,
     )
 
-    return metric_derivative, du_r_dt, du_phi_dt, dr_dt, dphi_dt, dE_r_dt
+    derivatives = metric_derivative, du_r_dt, du_phi_dt, dr_dt, dphi_dt, dE_r_dt
+    if dark_fields is not None:
+        dark_derivatives = dark_photon_time_derivatives(
+            metric, metric_derivative, dark_fields, charge_density,
+            current_density, mu, sin_chi=sin_chi, epsilon_0=epsilon_0,
+            dark_ko=dark_ko,
+        )
+        return (*derivatives, dark_derivatives)
+    return derivatives
 
 
 def _metric_stage(metric, derivative, scale, GR_on):
@@ -383,6 +412,12 @@ def rk4_step(
     particle_boundary=None,
     inner_open=False,
     zero_shift=0,
+    dark_fields=None,
+    mu=0.0,
+    sin_chi=0.0,
+    time=0.0,
+    dark_field_boundary=None,
+    dark_ko=False,
 ):
     """Advance particles, electrostatics, and Z4C with one RK4 tableau.
 
@@ -404,6 +439,21 @@ def rk4_step(
     Return ``(particles, metric, charge_density, E_r)``; the final charge
     density is diagnostic only. Absorption deletes particle sources without
     erasing their field, and direct current deposition permits Gauss drift.
+
+    With ``dark_fields=(E_prime_r, A_prime_r, phi_prime)``, advance the
+    supplied dark equations in the same tableau and append the updated tuple
+    as a fifth return value. The radial components are covariant. Dark fields
+    remain active independently of ``EM_on``; ``sin_chi=0`` removes particle
+    coupling but retains their stress when ``GR_on=True``. The Proca mass
+    sign gives vacuum dispersion omega**2 = k**2 + mu**2.
+
+    ``dark_field_boundary(fields, stage_metric, stage_time)`` supplies stage
+    boundary data. The default suppresses incoming outer characteristics.
+    Dark-field shift transport uses fourth-order upwind derivatives.
+    The runtime flag ``dark_ko`` (default False) enables metric.nu KO
+    dissipation at every dark-field RK stage, including when GR_on=False.
+    Pass callbacks as static arguments when directly jitting this function,
+    or capture them in a closure. The caller advances ``time`` between steps.
     """
 
     metric = jax.lax.cond(
@@ -414,6 +464,10 @@ def rk4_step(
     )
     if particle_boundary is not None:
         particles = particle_boundary(particles, metric)
+    if dark_fields is not None:
+        if dark_field_boundary is None:
+            dark_field_boundary = dark_field_outer_boundary
+        dark_fields = dark_field_boundary(dark_fields, metric, time)
 
     r0, phi0 = particles.get_positions()
     ur0, uphi0 = particles.get_velocities()
@@ -430,8 +484,12 @@ def rk4_step(
         GR_on,
         inner_open,
         zero_shift,
+        dark_fields,
+        mu,
+        sin_chi,
+        dark_ko,
     )
-    k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt, k1_dE_r_dt = k1
+    k1_metric, k1_du_r_dt, k1_du_phi_dt, k1_dr_dt, k1_dphi_dt, k1_dE_r_dt = k1[:6]
 
     metric_k2 = _metric_stage(metric, k1_metric, 0.5 * dt, GR_on)
     E_r_k2 = E_r + 0.5 * dt * k1_dE_r_dt
@@ -444,6 +502,14 @@ def rk4_step(
     )
     if particle_boundary is not None:
         particles_k2 = particle_boundary(particles_k2, metric_k2)
+    dark_fields_k2 = None
+    if dark_fields is not None:
+        dark_fields_k2 = jax.tree.map(
+            lambda field, rhs: field + 0.5 * dt * rhs, dark_fields, k1[6],
+        )
+        dark_fields_k2 = dark_field_boundary(
+            dark_fields_k2, metric_k2, time + 0.5 * dt,
+        )
     k2 = _stage_derivatives(
         particles_k2,
         metric_k2,
@@ -453,8 +519,12 @@ def rk4_step(
         GR_on,
         inner_open,
         zero_shift,
+        dark_fields_k2,
+        mu,
+        sin_chi,
+        dark_ko,
     )
-    k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt, k2_dE_r_dt = k2
+    k2_metric, k2_du_r_dt, k2_du_phi_dt, k2_dr_dt, k2_dphi_dt, k2_dE_r_dt = k2[:6]
 
     metric_k3 = _metric_stage(metric, k2_metric, 0.5 * dt, GR_on)
     E_r_k3 = E_r + 0.5 * dt * k2_dE_r_dt
@@ -468,6 +538,14 @@ def rk4_step(
     )
     if particle_boundary is not None:
         particles_k3 = particle_boundary(particles_k3, metric_k3)
+    dark_fields_k3 = None
+    if dark_fields is not None:
+        dark_fields_k3 = jax.tree.map(
+            lambda field, rhs: field + 0.5 * dt * rhs, dark_fields, k2[6],
+        )
+        dark_fields_k3 = dark_field_boundary(
+            dark_fields_k3, metric_k3, time + 0.5 * dt,
+        )
     k3 = _stage_derivatives(
         particles_k3,
         metric_k3,
@@ -477,8 +555,12 @@ def rk4_step(
         GR_on,
         inner_open,
         zero_shift,
+        dark_fields_k3,
+        mu,
+        sin_chi,
+        dark_ko,
     )
-    k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt, k3_dE_r_dt = k3
+    k3_metric, k3_du_r_dt, k3_du_phi_dt, k3_dr_dt, k3_dphi_dt, k3_dE_r_dt = k3[:6]
 
     metric_k4 = _metric_stage(metric, k3_metric, dt, GR_on)
     E_r_k4 = E_r + dt * k3_dE_r_dt
@@ -492,6 +574,14 @@ def rk4_step(
     )
     if particle_boundary is not None:
         particles_k4 = particle_boundary(particles_k4, metric_k4)
+    dark_fields_k4 = None
+    if dark_fields is not None:
+        dark_fields_k4 = jax.tree.map(
+            lambda field, rhs: field + dt * rhs, dark_fields, k3[6],
+        )
+        dark_fields_k4 = dark_field_boundary(
+            dark_fields_k4, metric_k4, time + dt,
+        )
     k4 = _stage_derivatives(
         particles_k4,
         metric_k4,
@@ -501,8 +591,12 @@ def rk4_step(
         GR_on,
         inner_open,
         zero_shift,
+        dark_fields_k4,
+        mu,
+        sin_chi,
+        dark_ko,
     )
-    k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt, k4_dE_r_dt = k4
+    k4_metric, k4_du_r_dt, k4_du_phi_dt, k4_dr_dt, k4_dphi_dt, k4_dE_r_dt = k4[:6]
 
     weighted_metric_derivative = _combine_rk4_derivatives(
         k1_metric,
@@ -549,13 +643,25 @@ def rk4_step(
         k1_dE_r_dt + 2.0 * k2_dE_r_dt + 2.0 * k3_dE_r_dt + k4_dE_r_dt
     )
     charge_density = jax.lax.cond(
-        EM_on,
+        jnp.logical_or(EM_on, dark_fields is not None),
         lambda _: compute_radial_charge_density(
             final_particles, final_metric, inner_open=inner_open,
         ),
         lambda _: jnp.zeros_like(final_metric.r),
         operand=None,
     )
+
+    if dark_fields is not None:
+        final_dark_fields = jax.tree.map(
+            lambda field, rhs1, rhs2, rhs3, rhs4: field + (dt / 6.0) * (
+                rhs1 + 2.0 * rhs2 + 2.0 * rhs3 + rhs4
+            ),
+            dark_fields, k1[6], k2[6], k3[6], k4[6],
+        )
+        final_dark_fields = dark_field_boundary(
+            final_dark_fields, final_metric, time + dt,
+        )
+        return final_particles, final_metric, charge_density, final_E_r, final_dark_fields
 
     return final_particles, final_metric, charge_density, final_E_r
 

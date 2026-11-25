@@ -25,6 +25,7 @@ from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.z4c_metric import Z4C_Metric
 
 __all__ = [
+    "analytic_os_metric",
     "constrained_state_to_z4c",
     "homogeneous_rest_mass_profile",
     "initial_center_A",
@@ -40,6 +41,30 @@ SHOOTING_MAX_ITERATIONS = 64
 SHOOTING_METHOD = "bracketed_bisection_with_lapse_normalization"
 
 integrate_metric_jit = jax.jit(integrate_metric_from_origin)
+
+
+def analytic_os_metric(r, dr, total_mass, surface_areal_radius,
+                       kappa=0.1, eta=2.0, nu=0.02):
+    """Time-symmetric OS geometry with unit lapse (Wu & Most, Eqs. 98-100).
+
+    Sample the continuum solution without a discrete constraint solve or
+    particle-mass calibration. ``r`` is the physical half-cell radial grid.
+    """
+    surface_r = surface_isotropic_radius(surface_areal_radius, total_mass)
+    c = surface_r * (1.0 + math.sqrt(1.0 - 2.0 * total_mass
+                                    / surface_areal_radius)) / surface_areal_radius
+    k = 2.0 * total_mass / surface_areal_radius**3
+    psi_squared = jnp.where(
+        r <= surface_r, 2.0 * c / (c*c + k*r*r),
+        (1.0 + total_mass / (2.0 * r))**2,
+    )
+    ones, zeros = jnp.ones_like(r), jnp.zeros_like(r)
+    return Z4C_Metric(
+        alpha=ones, beta=zeros, conformal_grr=ones, conformal_gt=ones,
+        chi=psi_squared**-2, Kh=zeros, Arr=zeros, At=zeros, theta=zeros,
+        Gamma=zeros, kappa=kappa * ones, eta=eta * ones, nu=nu * ones,
+        r=r, dr=dr,
+    )
 
 
 def surface_isotropic_radius(surface_areal_radius, total_mass):
@@ -348,11 +373,7 @@ def solve_constrained_star_initial_data(particles, grid, total_mass, tolerance=1
         raise ValueError("Star initial data require zero particle momenta.")
 
     def scaled_particles(factor):
-        return particle_species(
-            particles.name, particles.charges, particles.masses * factor,
-            particles.weight, particles.r, particles.ur, particles.phi,
-            particles.uphi, particles.shape_mode,
-        )
+        return particles.replace(masses=particles.masses * factor)
 
     @jax.jit
     def solve(factor):

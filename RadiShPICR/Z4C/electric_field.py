@@ -143,9 +143,9 @@ def compute_radial_lorentz_force(particles, metric: Z4C_Metric, E_r):
     """Return the electrostatic contribution to ``du_r / dt``.
 
     Lapse and electric field use ordinary coordinate-space compact weights.
-    The lapse has even origin parity and ``E_r`` has odd parity. Quadratic
-    charge deposition uses metric-corrected weights, so its weights differ
-    from this gather even when both stencils have the same support.
+    The lapse has even origin parity and ``E_r`` has odd parity.
+    Charge deposition uses the same ordinary shapes, with its selected
+    reflecting or open-inner boundary treatment.
     """
 
     radial_positions, _ = particles.get_positions()

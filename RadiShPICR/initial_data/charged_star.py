@@ -6,7 +6,6 @@ import numpy as np
 from scipy import sparse
 from scipy.sparse.linalg import spsolve
 
-from RadiShPICR.particles import particle_species
 from RadiShPICR.Z4C.electric_field import (
     compute_radial_charge_density,
     solve_radial_electric_field,
@@ -98,11 +97,7 @@ def solve_star_initial_data(
             jnp.concatenate((zeros[:1], areal_grid)),
             jnp.concatenate((zeros[:1], metric.r)),
         )
-        trial_particles = particle_species(
-            particles.name, particles.charges, particles.masses,
-            particles.weight, particle_r, particles.ur,
-            particles.phi, particles.uphi, particles.shape_mode,
-        )
+        trial_particles = particles.replace(r=particle_r)
         rho = compute_radial_matter_terms(
             trial_particles, trial_metric, inner_open=inner_open,
         ).rho
@@ -155,10 +150,8 @@ def solve_star_initial_data(
 
     _, _, E_r, particle_r = source_terms(jnp.asarray(psi))
     metric = metric._replace(chi=jnp.asarray(psi)**-4)
-    particles = particle_species(
-        particles.name, particles.charges, particles.masses * mass_factor,
-        particles.weight, particle_r, particles.ur,
-        particles.phi, particles.uphi, particles.shape_mode,
+    particles = particles.replace(
+        masses=particles.masses * mass_factor, r=particle_r,
     )
 
     return metric, particles, E_r

@@ -57,6 +57,37 @@ def initialize_vacuum_matter_terms(metric):
     )
 
 
+def dark_energy_momentum_tensor(metric, dark_fields, mu, epsilon_0=1.0):
+    """Eulerian dark-field sources from the positive-mass Proca action.
+
+    Both radial fields in ``(E_prime_r, A_prime_r, phi_prime)`` are covariant.
+    ``Stt`` is S_theta_theta / r**2 and ``Sr`` is contravariant S^r.
+    Mixing couples the particles to this field; it does not multiply its
+    standalone stress tensor. The evolution in ``dark_photon_field`` uses the
+    mass sign of this action, so the two are mutually consistent.
+    """
+
+    E_prime_r, A_prime_r, phi_prime = dark_fields
+    a = metric.conformal_grr / metric.chi
+    b = metric.conformal_gt / metric.chi
+    electric_squared = E_prime_r**2 / a
+    vector_squared = A_prime_r**2 / a
+    scalar_squared = phi_prime**2
+
+    rho = 0.5 * epsilon_0 * (
+        electric_squared + mu**2 * (scalar_squared + vector_squared)
+    )
+    Srr = 0.5 * epsilon_0 * (
+        -E_prime_r**2 + mu**2 * (A_prime_r**2 + a * scalar_squared)
+    )
+    Stt = 0.5 * epsilon_0 * b * (
+        electric_squared + mu**2 * (scalar_squared - vector_squared)
+    )
+    Sr = epsilon_0 * mu**2 * phi_prime * A_prime_r / a
+
+    return MatterTerms(rho, Srr, Stt, Sr, jnp.zeros_like(rho))
+
+
 def _radial_matter_deposition_data(particles, metric, inner_open=False):
     r_particle, _ = particles.get_positions()
     ur, uphi = particles.get_velocities()
@@ -242,14 +273,14 @@ def compute_radial_stress_tensor_component(
 
 def compute_hamiltonian_constraint(metric: Z4C_Metric):
 
-    # ASSUMES VACUUM and IGNORES THETA FOR NOW. NEEDS TO BE FIXED FOR NON-VACUUM CASES
+    # Geometric Hamiltonian residual; callers subtract 16*pi*Eulerian energy.
     
     chi = metric.chi
     grr = metric.conformal_grr
     gt = metric.conformal_gt
     Arr = metric.Arr
     At = metric.At
-    K  = metric.Kh
+    K  = metric.Kh + 2.0 * metric.theta
     r  = metric.r
 
     dchidr = first_derivative(chi, metric.dr, parity=1)
@@ -266,3 +297,19 @@ def compute_hamiltonian_constraint(metric: Z4C_Metric):
 
 
     return constraint
+
+
+def compute_radial_momentum_constraint(metric: Z4C_Metric):
+    """Geometric part of D_j K^j_r - ∂_r K. Subtract 8π S_r for matter."""
+    grr, gt, chi = metric.conformal_grr, metric.conformal_gt, metric.chi
+    A_radial = metric.Arr / grr
+    A_angular = metric.At / gt
+    K = metric.Kh + 2.0 * metric.theta
+
+    # Twice Γ^θ_{θr} = ∂_r ln(r² gt / chi). Differentiate the regular
+    # conformal factors separately at the puncture.
+    angular_connection = (2.0 / metric.r + first_derivative(gt, metric.dr, parity=1) / gt
+                          - first_derivative(chi, metric.dr, parity=1) / chi)
+    return (first_derivative(A_radial, metric.dr, parity=1)
+            - (2.0 / 3.0) * first_derivative(K, metric.dr, parity=1)
+            + angular_connection * (A_radial - A_angular))

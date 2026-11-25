@@ -46,6 +46,28 @@ def first_derivative(field, dr, parity=-1):
     return derivative[2:]
 
 @jax.jit
+def upwind_first_derivative(field, dr, beta, parity=-1):
+    """Fourth-order shift derivative; the transport velocity is -beta."""
+    centered = first_derivative(field, dr, parity)
+    extended = jnp.concatenate((parity * field[:3][::-1], field))
+
+    # Three reflected cells preserve the half-cell origin convention.
+    forward = (
+        -3 * extended[2:-4] - 10 * extended[3:-3]
+        + 18 * extended[4:-2] - 6 * extended[5:-1] + extended[6:]
+    ) / (12 * dr)
+    backward = (
+        3 * extended[4:-2] + 10 * extended[3:-3]
+        - 18 * extended[2:-4] + 6 * extended[1:-5] - extended[:-6]
+    ) / (12 * dr)
+
+    # Retain the established outer closure where the biased stencil ends.
+    derivative = jnp.where(beta[:-3] > 0, forward,
+                           jnp.where(beta[:-3] < 0, backward, centered[:-3]))
+    return centered.at[:-3].set(derivative)
+
+
+@jax.jit
 def second_derivative(field, dr, parity=-1):
     # compute finite difference derivative
     # assume total periodic domain for now

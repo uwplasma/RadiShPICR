@@ -1,6 +1,10 @@
 __pycache__/*
 *.pyc
 *.ipynb
+*.h5
+*.png
+*.csv
+*.json
 outputs/*
 demos/**/outputs/
 demos/oppenheimer_snyder_collapse_z4c/runs/
