@@ -3,6 +3,8 @@ import unittest
 import jax
 import jax.numpy as jnp
 
+from demos.dark_photon_superradiant_cloud.initial_cloud import initial_cloud
+from RadiShPICR.initial_data import schwarzschild_trumpet_metric
 from RadiShPICR.particles.shape_factors.common import proper_radial_shell_volume
 from RadiShPICR.Z4C.dark_photon_field import (
     dark_field_energy,
@@ -44,6 +46,53 @@ def spherical_bessel(x):
 class DarkPhotonFieldTests(unittest.TestCase):
     def assert_close(self, actual, expected, rtol=2.0e-12, atol=2.0e-12):
         self.assertTrue(bool(jnp.allclose(actual, expected, rtol=rtol, atol=atol)))
+
+    def test_initial_cloud_normal_projection_and_energy(self):
+        metric = flat_metric(radius=4.0)
+        r = metric.r
+        alpha = 0.7 + 0.01 * r**2
+        chi = jnp.full_like(r, 0.5)
+        bohr, mu, energy = 2.0, 0.3, 1.0e-4
+
+        for shift_rate in (-0.03, 0.03):
+            background = metric._replace(
+                alpha=alpha, beta=shift_rate * r, chi=chi,
+                conformal_grr=jnp.full_like(r, 1.5),
+            )
+            fields = jax.jit(initial_cloud)(background, bohr, mu, energy)
+            E_r, A_r, phi = fields
+
+            # Re(A'_0) = 0 at this phase. Contract the four-covector
+            # with n^mu, independently of any spatial index raising.
+            zero = jnp.zeros_like(r)
+            A_mu = jnp.stack((zero, A_r, zero, zero), axis=1)
+            n_up = jnp.stack((1.0 / alpha, -background.beta / alpha, zero, zero), axis=1)
+            self.assert_close(phi, -jnp.sum(n_up * A_mu, axis=1))
+            self.assertGreater(float(jnp.max(jnp.abs(phi))), 0.0)
+            self.assert_close(E_r, 0.0)
+            self.assert_close(dark_field_energy(background, fields, mu), energy, atol=1.0e-16)
+
+    def test_initial_cloud_zero_shift_retains_radial_profile(self):
+        metric = flat_metric()
+        bohr, mu, energy = 2.0, 0.3, 1.0e-4
+        profile = metric.r / bohr * jnp.exp(-metric.r / (2.0 * bohr))
+        zero = jnp.zeros_like(metric.r)
+        amplitude = jnp.sqrt(energy / dark_field_energy(metric, (zero, profile, zero), mu))
+
+        E_r, A_r, phi = initial_cloud(metric, bohr, mu, energy)
+        self.assert_close(E_r, 0.0)
+        self.assert_close(A_r, amplitude * profile)
+        self.assert_close(phi, 0.0)
+
+    def test_initial_cloud_on_schwarzschild_trumpet(self):
+        metric = schwarzschild_trumpet_metric(flat_metric(256, 100.0).r, 1.0)
+        fields = initial_cloud(metric, 100.0, 0.1, 1.0e-4)
+        E_r, A_r, phi = fields
+
+        self.assertTrue(bool(jnp.all(jnp.isfinite(jnp.stack(fields)))))
+        self.assert_close(metric.beta * A_r - metric.alpha * phi, 0.0)
+        self.assertGreater(float(jnp.max(jnp.abs(phi))), 0.0)
+        self.assert_close(dark_field_energy(metric, fields, 0.1), 1.0e-4, atol=1.0e-16)
 
     def test_radial_momentum_constraint_with_manufactured_proca_source(self):
         metric = flat_metric(radius=2.0)
